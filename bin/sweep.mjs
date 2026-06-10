@@ -49,7 +49,7 @@ export async function sweepIndex(getJson, { limit = 500, maxPages = 500 } = {}) 
     )
     const batch = res?.sites ?? []
     for (const site of batch) {
-      const id = String(site.site_id ?? site.ps_id ?? '')
+      const id = String(site.site_id ?? '')
       if (id !== '') sites.set(id, entryOf(site))
     }
     if (batch.length < limit) return sites
@@ -115,7 +115,13 @@ export function maxLastUpdate(api) {
 
 async function main() {
   const limitArg = process.argv.indexOf('--limit')
-  const limit = limitArg === -1 ? 500 : Number(process.argv[limitArg + 1])
+  let limit = 500
+  if (limitArg !== -1) {
+    limit = Number(process.argv[limitArg + 1])
+    if (!Number.isFinite(limit) || limit <= 0) {
+      throw new Error(`--limit requires a positive number, got: ${process.argv[limitArg + 1]}`)
+    }
+  }
   const { getJson, stats } = createApiClient()
   const index = await sweepIndex(getJson, { limit })
   process.stderr.write(`${index.size} sites in ${stats.requests} requests\n`)
