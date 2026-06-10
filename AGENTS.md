@@ -61,17 +61,29 @@ silently deleted — per-reason counts go into the manifest.
 - Any polygon with `marine_area > 50000` km² that does NOT have a hard transit ban
   (`entry === 1` or `anchoring === 1`) — catches ocean-basin Fisheries-Management/Other giants
   regardless of the free-text category label, while protecting every genuinely-prohibited zone.
+- Any feature whose whole-geometry bbox spans `> 90°` in lon OR lat without a hard ban
+  (`maxBboxSpanDegWithoutHardBan`) — the planet-spanning "Policies" overlays (IMO, WTO, BBNJ,
+  Marine Oil Pollution Convention, …) carry `marine_area = null`, so the km² cap can't see them;
+  the span cap does. These must be excluded at the FEATURE level (not per component) because some
+  are MultiPolygons mixing a planet-wide ring with smaller ones. ~9 features; each would otherwise
+  match every point on Earth.
 
-Inland-water sites are KEPT (small, low-harm, carry real restrictions). Net measured impact:
-keep ~94% of 28,058 features, remove ~99% of total area (the false-alarm fuel).
+Inland-water sites are KEPT (small, low-harm, carry real restrictions). Real measured impact over
+the full dataset: 538 EEZ + 477 oversized + the planet-spanning overlays dropped; 27,043 of 28,058
+sites kept → 166,213 components.
 
 ## Regions are GEOGRAPHIC
 
-[regions/regions.geojson](regions/regions.geojson) defines ~8 ocean-basin regions; a vessel
+[regions/regions.geojson](regions/regions.geojson) defines 12 ocean-basin regions; a vessel
 loads only the basin(s) it sails. **LFP is a per-zone filter attribute, not a region axis** —
-the LFP partitioning of the raw download is just packaging. The `sw-pacific` region is
-authored as a MultiPolygon so it is antimeridian-safe (Fiji at E179/W179 lands in one region);
-`region-tag.mjs` resolves antimeridian-spanning centroids there.
+the LFP partitioning of the raw download is just packaging. The slugs (the array ORDER is the
+overlap-resolution contract — first containing region wins — so don't reorder casually):
+`southern-ocean, mediterranean, caribbean, north-europe, nw-pacific, sw-pacific, ne-pacific,
+se-pacific, south-atlantic, nw-atlantic, ne-atlantic, indian-ocean`. The full globe is covered
+(validated: 0 features fall to `other`). The `sw-pacific` region is a MultiPolygon so it is
+antimeridian-safe (Fiji at E179/W179 lands in one region); `region-tag.mjs` resolves
+antimeridian-spanning centroids there. **This slug list is a cross-repo contract** — it must match
+`REGION_SLUGS` in the plugin's `src/index.ts`.
 
 ## File layout
 

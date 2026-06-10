@@ -87,8 +87,9 @@
     "partitions": ["HighSeas"],
     "siteLocations": [],
     "maxAreaKm2WithoutHardBan": 50000,
+    "maxBboxSpanDegWithoutHardBan": 90,
     "hardBanColumns": ["entry", "anchoring"],
-    "note": "LOCKED defaults. category 9 = EEZ/jurisdictional (538 feat / 205M km2), not a restriction. HighSeas partition = RFMO/basin overlays (704 feat / 1.18B km2). maxAreaKm2WithoutHardBan: drop any polygon with marine_area > 50000 km2 UNLESS entry===1 or anchoring===1 (i.e. a hard transit ban) -- catches ocean-basin FMA/Other giants regardless of category label while protecting every genuinely-prohibited zone. KEEP inland-water (siteLocations empty by choice -- small, low-harm, carries real restrictions). Filtered (not deleted); per-reason counts recorded in manifest. Configurable via pipeline.config.json (data repo) and plugin config (excludeCategories)."
+    "note": "LOCKED defaults. category 9 = EEZ/jurisdictional (538 feat / 205M km2), not a restriction. HighSeas partition = RFMO/basin overlays. maxAreaKm2WithoutHardBan: drop any polygon with marine_area > 50000 km2 UNLESS entry===1 or anchoring===1 (hard transit ban). maxBboxSpanDegWithoutHardBan: ALSO drop any feature whose whole-geometry bbox spans > 90 degrees in lon OR lat without a hard ban -- catches global/continental overlays (IMO/WTO/BBNJ/Oil-Pollution-Convention 'Policies' polygons that span the whole planet with marine_area=null, so the km2 cap can't see them; ~9 features, each would match every point on Earth). KEEP inland-water (siteLocations empty by choice). Filtered (not deleted); per-reason counts recorded in manifest."
   },
   "geometry": {
     "types": ["Polygon", "MultiPolygon"],

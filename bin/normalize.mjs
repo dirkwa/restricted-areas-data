@@ -87,15 +87,29 @@ function hasHardBan(restrictions) {
   return false
 }
 
+/** Largest of the bbox lon-span and lat-span, in degrees. */
+function bboxSpanDeg(featureBbox) {
+  if (!featureBbox) return 0
+  const [minLon, minLat, maxLon, maxLat] = featureBbox
+  return Math.max(maxLon - minLon, maxLat - minLat)
+}
+
 /**
  * Decide whether a feature is excluded. Returns a drop-reason string, or null to keep.
  * Partition exclusion is checked once by the caller (it drops the whole stream).
+ * `featureBbox` is the bbox of the WHOLE feature geometry (before component explosion).
  */
-function dropReason(categoryId, props, restrictions) {
+function dropReason(categoryId, props, restrictions, featureBbox) {
   if (EXCLUDE.categoryIds.includes(categoryId)) return 'categoryId'
+  const hardBan = hasHardBan(restrictions)
   const area = marineAreaKm2(props)
-  if (area !== null && area > EXCLUDE.maxAreaKm2WithoutHardBan && !hasHardBan(restrictions)) {
+  if (area !== null && area > EXCLUDE.maxAreaKm2WithoutHardBan && !hardBan) {
     return 'areaWithoutHardBan'
+  }
+  // marine_area is null on the planet-spanning policy overlays (IMO/WTO/BBNJ),
+  // so the km2 cap can't catch them; fall back to the geometry bbox span.
+  if (bboxSpanDeg(featureBbox) > EXCLUDE.maxBboxSpanDegWithoutHardBan && !hardBan) {
+    return 'bboxSpanWithoutHardBan'
   }
   return null
 }
@@ -133,7 +147,8 @@ function processFeature(feature) {
   const rawProps = feature?.properties ?? {}
   const norm = normalizeProps(rawProps)
   const categoryId = categoryIdOf(rawProps.category_name)
-  const reason = dropReason(categoryId, rawProps, norm.restrictions)
+  const featureBbox = feature.geometry ? bbox(feature.geometry) : null
+  const reason = dropReason(categoryId, rawProps, norm.restrictions, featureBbox)
   if (reason) return { drop: reason }
 
   const properties = flattenForFgb(norm)
@@ -164,7 +179,7 @@ async function run() {
   const outFull = fs.createWriteStream(args['out-full'])
   const outDisplay = fs.createWriteStream(args['out-display'])
 
-  const drops = { categoryId: 0, areaWithoutHardBan: 0, partition: 0 }
+  const drops = { categoryId: 0, areaWithoutHardBan: 0, bboxSpanWithoutHardBan: 0, partition: 0 }
   const counts = { featuresIn: 0, kept: 0, componentsFull: 0, componentsDisplay: 0 }
 
   // Whole-partition exclusion (HighSeas): consume nothing, record the drop, exit.

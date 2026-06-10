@@ -168,6 +168,44 @@ describe('exclusion logic (LOCKED mapping.json.exclude)', () => {
     expect(r.drop).toBeUndefined()
     expect(r.full.length).toBe(1)
   })
+
+  it('drops a planet-spanning overlay with marine_area=null (the IMO/WTO case)', () => {
+    // bbox spans ~360deg lon — the km2 cap can't see it (marine_area null) but
+    // the bbox-span cap must.
+    const planet = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [-179, -85],
+          [179, -85],
+          [179, 85],
+          [-179, 85],
+          [-179, -85]
+        ]
+      ]
+    }
+    const r = processFeature(
+      feature({ category_name: 'Other', marine_area: null, entry: 3 }, planet)
+    )
+    expect(r.drop).toBe('bboxSpanWithoutHardBan')
+  })
+
+  it('KEEPS a planet-spanning feature that carries a hard ban', () => {
+    const planet = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [-179, -85],
+          [179, -85],
+          [179, 85],
+          [-179, 85],
+          [-179, -85]
+        ]
+      ]
+    }
+    const r = processFeature(feature({ category_name: 'Other', anchoring: 1 }, planet))
+    expect(r.drop).toBeUndefined()
+  })
 })
 
 describe('geometry explosion and display rounding', () => {
