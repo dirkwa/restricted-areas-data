@@ -78,7 +78,11 @@ publish      build-index + make-manifest.mjs → manifest.json + LICENSE-DATA.md
   keep their previously mirrored geometry; NEW sites without geometry wait in
   mirror-state.geometryUnavailable and are retried every sync.
 - Excluded partitions (HighSeas) are not mirrored at all — re-seed from a fresh bulk
-  download if mapping.json's partition exclusion is ever unlocked.
+  download if mapping.json's partition exclusion is ever unlocked. The API catalog has no
+  partition concept, so the sync mirrors that exclusion by country: sweep entries with
+  `country === 'High Seas / International'` (verified: 701/704 of the HighSeas member,
+  zero false positives elsewhere) are never diffed, fetched, or indexed
+  ([bin/lib/partition.mjs](bin/lib/partition.mjs) `isHighSeasCountry`).
 
 No PMTiles in v1 — Freeboard consumes the polygons via the plugin's Resources API, so no tile
 layer is built. With the exclusions applied (below), regional FGBs stay well under the asset

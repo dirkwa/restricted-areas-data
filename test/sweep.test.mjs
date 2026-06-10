@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { sweepIndex, diffIndex, assertSaneSweep, maxLastUpdate } from '../bin/sweep.mjs'
+import { HIGH_SEAS_COUNTRY } from '../bin/lib/partition.mjs'
 
 const site = (id, major, minor, lastUpdate) => ({
   site_id: id,
@@ -21,8 +22,8 @@ describe('sweepIndex', () => {
     }
     const index = await sweepIndex(getJson, { limit: 2 })
     expect(index.size).toBe(3)
-    expect(index.get('A')).toEqual({ v: [1, 0], u: '2025-01-01' })
-    expect(index.get('B')).toEqual({ v: [2, 3], u: null })
+    expect(index.get('A')).toEqual({ v: [1, 0], u: '2025-01-01', hs: false })
+    expect(index.get('B')).toEqual({ v: [2, 3], u: null, hs: false })
     expect(urls[0]).toContain('type=sites')
     expect(urls[0]).toContain('limit=2')
     expect(urls[1]).toContain('page=2')
@@ -69,6 +70,31 @@ describe('diffIndex', () => {
     const api = new Map([['B', { v: [2, 4], u: null }]])
     expect(diffIndex({ B: mirror.B }, api).changed).toEqual(['B'])
   })
+
+  it('ignores high-seas catalog entries (the HighSeas partition exclusion, API side)', () => {
+    // The catalog lists ~700 high-seas RFMO sites the mirror deliberately
+    // omits; they must never surface as "added" (or be fetched weekly).
+    const api = new Map([
+      ['HS1', { v: [1, 0], u: null, hs: true }],
+      ['D', { v: [1, 0], u: null, hs: false }]
+    ])
+    const diff = diffIndex({}, api)
+    expect(diff.added).toEqual(['D'])
+  })
+})
+
+describe('sweepIndex marks high-seas sites', () => {
+  it('flags entries by the High Seas country value', async () => {
+    const getJson = async () => ({
+      sites: [
+        { ...site('HS1', 1, 0), country: HIGH_SEAS_COUNTRY },
+        { ...site('A', 1, 0), country: 'Fiji' }
+      ]
+    })
+    const index = await sweepIndex(getJson, { limit: 10 })
+    expect(index.get('HS1').hs).toBe(true)
+    expect(index.get('A').hs).toBe(false)
+  })
 })
 
 describe('assertSaneSweep', () => {
@@ -90,11 +116,12 @@ describe('assertSaneSweep', () => {
 })
 
 describe('maxLastUpdate', () => {
-  it('returns the latest known last_update', () => {
+  it('returns the latest known last_update, ignoring high-seas entries', () => {
     const api = new Map([
       ['A', { v: [1, 0], u: '2025-01-01' }],
       ['B', { v: [1, 0], u: '2026-04-30' }],
-      ['C', { v: [1, 0], u: null }]
+      ['C', { v: [1, 0], u: null }],
+      ['HS', { v: [1, 0], u: '2026-12-31', hs: true }]
     ])
     expect(maxLastUpdate(api)).toBe('2026-04-30')
   })

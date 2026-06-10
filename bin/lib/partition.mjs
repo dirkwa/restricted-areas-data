@@ -17,3 +17,17 @@ export function isExcludedPartition(partition, excludedTokens) {
   const components = partition.split('_')
   return excludedTokens.some((token) => components.includes(token))
 }
+
+/**
+ * The API-side counterpart of the HighSeas partition exclusion: the catalog
+ * has no partition concept, but high-seas RFMO sites carry this country value
+ * (verified against the 052826 download: 701 of the HighSeas member's 704
+ * features, and zero features anywhere else). The sync skips them so the
+ * mirror's exclusion holds for sites arriving via the API; the handful with a
+ * real country remain subject to the area/bbox-span caps like everything else.
+ */
+export const HIGH_SEAS_COUNTRY = 'High Seas / International'
+
+export function isHighSeasCountry(country) {
+  return country === HIGH_SEAS_COUNTRY
+}

@@ -210,11 +210,13 @@ async function run() {
   }
   await updates.end()
 
-  // The new index is simply the sweep, minus sites still awaiting a boundary —
-  // leaving those out keeps them "added" so every future sync retries them.
+  // The new index is the sweep, minus high-seas sites (mirroring the HighSeas
+  // partition exclusion) and minus sites still awaiting a boundary — leaving
+  // the latter out keeps them "added" so every future sync retries them.
   const newIndex = {}
   for (const [id, entry] of api) {
-    if (!geometryUnavailable.has(id)) newIndex[id] = entry
+    if (entry.hs || geometryUnavailable.has(id)) continue
+    newIndex[id] = { v: entry.v, u: entry.u }
   }
   const newState = {
     ...state,

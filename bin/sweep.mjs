@@ -22,6 +22,7 @@
 
 import { fileURLToPath } from 'node:url'
 import { API_BASE, createApiClient } from './lib/api-client.mjs'
+import { isHighSeasCountry } from './lib/partition.mjs'
 
 function num(v) {
   if (typeof v === 'number' && Number.isFinite(v)) return v
@@ -36,7 +37,10 @@ function num(v) {
 function entryOf(site) {
   return {
     v: [num(site.site_major_version), num(site.site_minor_version)],
-    u: typeof site.last_update === 'string' && site.last_update !== '' ? site.last_update : null
+    u: typeof site.last_update === 'string' && site.last_update !== '' ? site.last_update : null,
+    // High-seas RFMO sites mirror the HighSeas partition exclusion: never
+    // fetched, never mirrored, never counted as added/changed.
+    hs: isHighSeasCountry(site.country)
   }
 }
 
@@ -72,6 +76,7 @@ export function diffIndex(mirror, api) {
   const changed = []
   const removed = []
   for (const [id, apiEntry] of a) {
+    if (apiEntry.hs) continue
     const mirrorEntry = m.get(id)
     if (!mirrorEntry) {
       added.push(id)
@@ -107,7 +112,8 @@ export function assertSaneSweep(mirrorSize, apiSize, removedCount, { maxRemovedR
 /** Latest last_update across the sweep — the dataset date of an API-synced release. */
 export function maxLastUpdate(api) {
   let max = null
-  for (const { u } of api.values()) {
+  for (const { u, hs } of api.values()) {
+    if (hs) continue
     if (u !== null && (max === null || u > max)) max = u
   }
   return max
