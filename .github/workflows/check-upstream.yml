@@ -1,0 +1,54 @@
+name: check-upstream
+
+# Monthly probe: has Navigator published a newer dataset than we last built?
+# Scrapes only the data-request page for its advertised dataset date and
+# compares it to the datasetDate in our latest published manifest. Opens (or
+# updates) a single tracking issue when upstream is newer. It NEVER downloads
+# the terms-gated dataset; a human still has to click I-AGREE.
+on:
+  schedule:
+    - cron: '17 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Compare upstream dataset date with published manifest
+        id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node bin/check-upstream.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Open or update tracking issue
+        if: steps.compare.outputs.newer == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_DATE: ${{ steps.compare.outputs.upstream_date }}
+          PUBLISHED_DATE: ${{ steps.compare.outputs.published_date }}
+        run: |
+          title="New Navigator dataset available ($UPSTREAM_DATE)"
+          body=$(cat <<EOF
+          Navigator advertises dataset date **$UPSTREAM_DATE**; the latest published manifest is **$PUBLISHED_DATE**.
+
+          To ingest: read the runbook in README.md, click I-AGREE at https://navigatormap.org/data-request, upload the raw zip to a staging release, then dispatch \`build.yml\`.
+
+          This issue is updated by the monthly \`check-upstream\` workflow; it does not download anything.
+          EOF
+          )
+          existing=$(gh issue list --label upstream-update --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body" --label upstream-update
+          fi

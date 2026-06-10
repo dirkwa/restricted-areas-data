@@ -1,0 +1,11 @@
+{
+  "$schema": "./pipeline.config.schema.json",
+  "excludeCategories": [9],
+  "excludePartitions": ["HighSeas"],
+  "maxAreaKm2WithoutHardBan": 50000,
+  "simplify": {
+    "displayToleranceDeg": 0.0007,
+    "displayPrecision": 5
+  },
+  "regionsFile": "regions/regions.geojson"
+}

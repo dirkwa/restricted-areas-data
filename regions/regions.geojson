@@ -1,0 +1,145 @@
+{
+  "type": "FeatureCollection",
+  "_comment": "Coarse ocean-basin tiling for routing normalized features into per-region FlatGeobuf extracts. A feature is assigned by testing its bbox-centroid against these polygons in array order; first containing polygon wins (ties broken by order). Regions deliberately overlap at edges; order resolves the overlap. Slugs match the plugin config region enum. sw-pacific is authored as two polygons so it is antimeridian-safe: Fiji (lon ~+179 and ~-179) lands in sw-pacific from either side. Bboxes are coarse coastal-cruising envelopes, not legal boundaries.",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "region": "mediterranean" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-10, 30],
+            [42, 30],
+            [42, 48],
+            [-10, 48],
+            [-10, 30]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "caribbean" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-100, 5],
+            [-55, 5],
+            [-55, 30],
+            [-100, 30],
+            [-100, 5]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "sw-pacific" },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [120, -50],
+              [180, -50],
+              [180, 10],
+              [120, 10],
+              [120, -50]
+            ]
+          ],
+          [
+            [
+              [-180, -50],
+              [-120, -50],
+              [-120, 10],
+              [-180, 10],
+              [-180, -50]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "ne-pacific" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-180, 10],
+            [-100, 10],
+            [-100, 70],
+            [-180, 70],
+            [-180, 10]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "se-pacific" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-120, -60],
+            [-60, -60],
+            [-60, 10],
+            [-120, 10],
+            [-120, -60]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "nw-atlantic" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-100, 10],
+            [-30, 10],
+            [-30, 70],
+            [-100, 70],
+            [-100, 10]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "ne-atlantic" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-30, 10],
+            [10, 10],
+            [10, 70],
+            [-30, 70],
+            [-30, 10]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "indian-ocean" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [20, -60],
+            [120, -60],
+            [120, 30],
+            [20, 30],
+            [20, -60]
+          ]
+        ]
+      }
+    }
+  ]
+}

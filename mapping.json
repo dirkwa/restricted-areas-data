@@ -1,0 +1,109 @@
+{
+  "_WARNING": "COUNTERINTUITIVE CODING. For all 43 coded fishing+marine-activity columns: 0 = ALLOWED, 1 = PROHIBITED, 2 = RESTRICTED, 3 = N/A or UNKNOWN, null = NOT-YET-CODED (treat as N/A). 1 MEANS PROHIBITED. A truthy test (`if (props.anchoring)`) is a SAFETY BUG. Every coded column MUST pass through levelOf(). Golden test asserts levelOf(1)==='prohibited'.",
+  "datasetDate": "2026-05-28",
+  "versionTag": "v2026.05",
+  "levelOf": "v===0?'allowed':v===1?'prohibited':v===2?'restricted':v===3?'unknown':'na'",
+  "levelReadRule": "out = (key in props) ? levelOf(props[key]) : 'na'  // read by KEY with null-coalescing on VALUE; NEVER branch on key existence (all 90 keys always present; V1/V2 differences are null VALUES, not missing keys).",
+  "severityOrder": ["prohibited", "restricted", "allowed", "unknown", "na"],
+  "codedColumns": {
+    "fishing": [
+      "recreational_fishing", "commercial_fishing", "artisanal_fishing", "subsistence_fishing",
+      "bottom_trawling", "pelagic_trawling", "hook_and_line", "trolling", "longlining", "nets",
+      "purse_seine_rndhaul_surrd_nets", "gillnetting", "gillnets_entangling_nets", "trammel_nets",
+      "dip_scoop_nets", "cast_nets", "drift_nets", "other_nets", "dredges", "traps_and_pots",
+      "spear_fishing", "underwater_extraction_diving", "hand_capture", "fish_aggregating_devices", "misc_gear"
+    ],
+    "activity": [
+      "discharge", "speed", "entry", "diving", "removal_of_historic_artifacts", "stopping", "anchoring",
+      "mooring", "dragging", "landing", "dredging", "dredging_dumping", "industr_or_mineral_exploration",
+      "drilling", "non_fishing_industr_extraction", "aquaculture", "construction", "overflight_or_drones"
+    ]
+  },
+  "coarseActivities": {
+    "anchoring": "anchoring",
+    "mooring": "mooring",
+    "entry": "entry",
+    "speed": "speed",
+    "diving": "diving",
+    "discharge": "discharge",
+    "dredging": "moreRestrictive(dredging, dredging_dumping)",
+    "removalOfArtifacts": "removal_of_historic_artifacts",
+    "fishingRecreational": "recreational_fishing",
+    "fishingCommercial": "commercial_fishing",
+    "fishingArtisanal": "moreRestrictive(artisanal_fishing, subsistence_fishing)",
+    "fishing": "moreRestrictive over ALL 25 fishing columns (order: prohibited>restricted>allowed>unknown>na)"
+  },
+  "coarseNotes": {
+    "diving": "RECREATIONAL SCUBA/freedive. Do NOT merge with underwater_extraction_diving (that is EXTRACTIVE fishing, a fishing column).",
+    "removalOfArtifacts": "removal_of_historic_artifacts is ARTIFACTS/FOSSILS, NOT marine life. Marine-life removal is captured by the fishing rollup.",
+    "dredging": "V1 uses dredging, V2 uses dredging_dumping; coalesce to the more-restrictive so V1/V2 polygons for the same rule agree.",
+    "fishingArtisanal": "artisanal_fishing + subsistence_fishing are both V2-only small-scale; folded to avoid a 4th fishing member.",
+    "fishing": "single 'is fishing limited here' signal for geofencing; per-gear detail stays in raw.restrictions."
+  },
+  "special": {
+    "tribal": "tribalExemption: 0->true, 1->false, null->null. BOOLEAN (inverted vs activities). NEVER a Level.",
+    "speed": "REDUCED scheme: Prohibited i.e. no transit (1); Restricted (2); N/A or Unknown (3); Not-Yet-Coded (null). NO 0/allowed value. Use the same levelOf() (0 never occurs).",
+    "lfp": "integer 0..5 Level-of-Fishing-Protection indicator; protection strength, NOT a Level enum.",
+    "wdpaId": "String(v); if result is '0' or '' or v is 0/null -> null (absent). Keep composite verbatim ('555542441; 555637321', '102534_B'). NEVER Number()-parse (type-unstable).",
+    "iucnCat": "passthrough; 'Unassigned' -> null. May be composite ('Unassigned; VI')."
+  },
+  "identity": {
+    "siteId": "SITE_ID",
+    "name": "site_name",
+    "country": "country",
+    "state": "state",
+    "authority": "managing_authority",
+    "designation": "designation",
+    "category": "category_name",
+    "categoryId": "derived 1..11 via Area Categories label table; 'unknown' on label drift",
+    "wdpaId": "see special.wdpaId",
+    "iucnCat": "see special.iucnCat",
+    "lfp": "lfp",
+    "tribalExemption": "see special.tribal",
+    "summary": "compose(purpose, restrictions, allowed); replace <br> with \\n",
+    "sourceUrls": "[url, regulation_source, other_helpful_links] filtered distinct non-null",
+    "season": "season",
+    "effectiveFrom": "effective_from",
+    "effectiveTo": "effective_to",
+    "siteVersion": "{ major: site_major_version, minor: site_minor_version }"
+  },
+  "rawPassthrough": "raw.restrictions = { <each of the 43 coded columns>: levelOf(value) }  // lossless",
+  "drop": ["OBJECTID", "Shape_Length", "Shape_Area"],
+  "areaCategories": {
+    "1": "Marine Protected Area",
+    "2": "Other Effective Area-Based Conservation Area",
+    "3": "Fisheries Management Area",
+    "4": "Water Quality/Human Health Area",
+    "5": "Recreational Area",
+    "6": "Vessel Restricted Area",
+    "7": "Vessel Reporting Area",
+    "8": "Voluntary Conservation Measure Area",
+    "9": "Jurisdictional Authority Area",
+    "10": "Other",
+    "11": "To Be Determined"
+  },
+  "exclude": {
+    "categoryIds": [9],
+    "partitions": ["HighSeas"],
+    "siteLocations": [],
+    "maxAreaKm2WithoutHardBan": 50000,
+    "hardBanColumns": ["entry", "anchoring"],
+    "note": "LOCKED defaults. category 9 = EEZ/jurisdictional (538 feat / 205M km2), not a restriction. HighSeas partition = RFMO/basin overlays (704 feat / 1.18B km2). maxAreaKm2WithoutHardBan: drop any polygon with marine_area > 50000 km2 UNLESS entry===1 or anchoring===1 (i.e. a hard transit ban) -- catches ocean-basin FMA/Other giants regardless of category label while protecting every genuinely-prohibited zone. KEEP inland-water (siteLocations empty by choice -- small, low-harm, carries real restrictions). Filtered (not deleted); per-reason counts recorded in manifest. Configurable via pipeline.config.json (data repo) and plugin config (excludeCategories)."
+  },
+  "geometry": {
+    "types": ["Polygon", "MultiPolygon"],
+    "coordOrder": "[lon, lat] WGS84",
+    "antimeridian": "RFC 7946 split; NO single ring crosses +/-180. EXPLODE MultiPolygon -> component polygons; index PER-COMPONENT bbox with parent back-ref; NEVER per-feature bbox.",
+    "resourceId": "UUIDv5 of SITE_ID"
+  },
+  "attribution": {
+    "license": "CC BY 4.0",
+    "downloadUrl": "https://navigatormap.org/data-request",
+    "citations": [
+      "Zetterlind, V. et al. (2025). Navigator - a global database of verified marine protected and managed area regulations and boundaries. Scientific Data, 12, 1212. https://doi.org/10.1038/s41597-025-05535-2",
+      "The ProtectedSeas Navigator Map of Conservation Regulations, ProtectedSeas®, https://map.navigatormap.org (last visited [date]).",
+      "Navigator Data Download, ProtectedSeas®. https://navigatormap.org/data-request (downloaded [date])."
+    ],
+    "disclaimer": "This is summary data and may be incomplete, inaccurate, or out of date. It is NOT a legal or compliance document. Provided \"as-is\". Always verify against official sources before relying on it for navigation or compliance."
+  }
+}

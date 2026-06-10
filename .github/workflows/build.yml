@@ -1,0 +1,191 @@
+name: build
+
+# Manual, gated build. The raw Navigator download is terms-of-use gated
+# (a human must click I-AGREE at navigatormap.org/data-request and upload the
+# zip to a staging release). This workflow turns that staged raw zip into the
+# published per-region FlatGeobuf extracts. It never downloads from Navigator.
+on:
+  workflow_dispatch:
+    inputs:
+      raw_release_tag:
+        description: 'Staging release tag holding the raw Navigator zip asset'
+        required: true
+      dataset_date:
+        description: 'Navigator dataset date (ISO, from the data-request page)'
+        required: true
+      download_date:
+        description: 'Date the maintainer clicked I-AGREE and downloaded (ISO)'
+        required: true
+      version_tag:
+        description: 'Release tag to publish (e.g. v2026.05)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  RAW_ZIP: navigator-raw.zip
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      regions: ${{ steps.regions.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Download staged raw zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ inputs.raw_release_tag }}" --pattern '*.zip' --output "$RAW_ZIP"
+
+      - name: Normalize + region-tag
+        run: |
+          mkdir -p work/regions
+          # Stream each member out of the zip and normalize it without ever
+          # holding the 6.7 GB expansion on disk at once. normalize.mjs writes
+          # exploded single-component NDJSON; region-tag routes by centroid.
+          for member in $(unzip -Z1 "$RAW_ZIP" | grep -E '\.geojson$'); do
+            partition="$(basename "$member" .geojson)"
+            unzip -p "$RAW_ZIP" "$member" \
+              | node bin/normalize.mjs \
+                  --partition "$partition" \
+                  --out-full work/"$partition".full.ndjson \
+                  --out-display work/"$partition".display.ndjson \
+                  --exclusions work/"$partition".exclusions.json
+          done
+          cat work/*.full.ndjson | node bin/region-tag.mjs --outdir work/regions
+          node bin/merge-exclusions.mjs work/*.exclusions.json > work/exclusions.json
+
+      - name: Determine regions produced
+        id: regions
+        run: |
+          list="$(ls work/regions/*.ndjson | xargs -n1 basename | sed 's/\.ndjson$//' | jq -R . | jq -cs .)"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ndjson
+          path: |
+            work/regions/*.ndjson
+            work/exclusions.json
+          retention-days: 1
+
+  build-region:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        region: ${{ fromJSON(needs.prepare.outputs.regions) }}
+    container:
+      image: ghcr.io/osgeo/gdal:ubuntu-small-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ndjson
+          path: work
+
+      - name: NDJSON -> FlatGeobuf (full + display)
+        env:
+          REGION: ${{ matrix.region }}
+        run: |
+          mkdir -p dist
+          src="work/regions/$REGION.ndjson"
+          # ogr2ogr reads NDJSON via GeoJSONSeq; one full-fidelity FGB plus a
+          # coordinate-thinned display FGB (tolerance/precision from
+          # pipeline.config.json) for low-bandwidth onboard rendering.
+          tol="$(jq -r '.simplify.displayToleranceDeg' pipeline.config.json)"
+          prec="$(jq -r '.simplify.displayPrecision' pipeline.config.json)"
+          ogr2ogr -f FlatGeobuf "dist/$REGION.fgb" "GeoJSONSeq:$src"
+          ogr2ogr -f FlatGeobuf \
+            -simplify "$tol" \
+            -lco "COORDINATE_PRECISION=$prec" \
+            "dist/$REGION.display.fgb" "GeoJSONSeq:$src"
+          # bbox + featureCount sidecar that build-index folds into the manifest.
+          node bin/region-meta.mjs --region "$REGION" --input "$src" > "dist/$REGION.meta.json"
+
+      - name: Sub-split guard (>1.9 GB)
+        env:
+          REGION: ${{ matrix.region }}
+        run: |
+          # GitHub release assets cap at 2 GB. A region this large means the
+          # exclusions did not bite; fail loud rather than publish a truncated
+          # asset. Sub-splitting by sub-bbox would be the follow-up.
+          for f in dist/$REGION.fgb dist/$REGION.display.fgb; do
+            size=$(stat -c%s "$f")
+            if [ "$size" -gt 2040109465 ]; then
+              echo "::error::$f is $size bytes (>1.9 GB); sub-split required"
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fgb-${{ matrix.region }}
+          path: |
+            dist/*.fgb
+            dist/*.meta.json
+          retention-days: 1
+
+  publish:
+    needs: [prepare, build-region]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fgb-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ndjson
+          path: work
+
+      - name: Build manifest + data licence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Compose the make-manifest index: per-region asset list with the
+          # bbox/featureCount read back from each FGB via ogrinfo.
+          node bin/build-index.mjs \
+            --dist dist \
+            --exclusions work/exclusions.json \
+            --generated-from "${{ inputs.raw_release_tag }}" \
+            > dist/index.json
+          node bin/make-manifest.mjs \
+            --index dist/index.json \
+            --version "${{ inputs.version_tag }}" \
+            --dataset-date "${{ inputs.dataset_date }}" \
+            --download-date "${{ inputs.download_date }}" \
+            --generated-from "${{ inputs.raw_release_tag }}" \
+            > dist/manifest.json
+          cp LICENSE-DATA.md dist/LICENSE-DATA.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.version_tag }}" \
+            --title "${{ inputs.version_tag }}" \
+            --notes "ProtectedSeas Navigator regional FlatGeobuf extracts. Dataset ${{ inputs.dataset_date }}. CC BY 4.0 — see LICENSE-DATA.md." \
+            dist/*.fgb dist/manifest.json dist/LICENSE-DATA.md

@@ -1,0 +1,20 @@
+node_modules/
+*.log
+*.tmp
+.DS_Store
+.env
+
+# Pipeline working dir: unzipped Navigator GeoJSON, NDJSON, FGB outputs.
+# The 6.7 GB raw data and all derived artifacts NEVER go in git.
+work/
+dist/
+*.fgb
+*.ndjson
+*.pmtiles
+
+# The raw Navigator download (terms-gated, 2.5 GB) must never be committed.
+Navigator_*.zip
+Navigator_*.json
+
+# Test scratch output (disk-backed, not /tmp)
+.scratch/

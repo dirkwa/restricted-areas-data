@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/dirkwa/restricted-areas-data/pipeline.config.schema.json",
+  "title": "restricted-areas-data pipeline configuration",
+  "description": "Filtering and simplification controls for the Navigator -> regional FlatGeobuf pipeline. Exclusion defaults are LOCKED; see README for the measured justification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "excludeCategories",
+    "excludePartitions",
+    "maxAreaKm2WithoutHardBan",
+    "simplify",
+    "regionsFile"
+  ],
+  "properties": {
+    "excludeCategories": {
+      "description": "Area Category ids to drop. 9 = Jurisdictional Authority Area (EEZ overlays, not a restriction).",
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1, "maximum": 11 },
+      "uniqueItems": true
+    },
+    "excludePartitions": {
+      "description": "Source partitions to drop. HighSeas = RFMO/basin overlays spanning entire ocean basins.",
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "maxAreaKm2WithoutHardBan": {
+      "description": "Drop any polygon larger than this unless it carries a hard transit ban (entry===1 or anchoring===1).",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "simplify": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["displayToleranceDeg", "displayPrecision"],
+      "properties": {
+        "displayToleranceDeg": {
+          "description": "Douglas-Peucker tolerance in degrees for the display (simplified) FGB.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "displayPrecision": {
+          "description": "Decimal places to round display coordinates to.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        }
+      }
+    },
+    "regionsFile": {
+      "description": "Path (repo-relative) to the ocean-basin regions GeoJSON used by region-tag.",
+      "type": "string"
+    }
+  }
+}

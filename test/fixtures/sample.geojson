@@ -1,0 +1,118 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "SITE_ID": "KEEP-SMALL",
+        "site_name": "Small No-Anchor Cove",
+        "category_name": "Vessel Restricted Area",
+        "anchoring": 1,
+        "entry": 0,
+        "marine_area": 12,
+        "tribal": 1,
+        "wdpa_id": 0,
+        "iucn_cat": "Unassigned",
+        "dredging": 2,
+        "dredging_dumping": null,
+        "artisanal_fishing": 1,
+        "subsistence_fishing": null,
+        "recreational_fishing": 0,
+        "commercial_fishing": 2,
+        "site_major_version": 2,
+        "site_minor_version": 0
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-70.123456, 41.123456],
+            [-70.0, 41.123456],
+            [-70.0, 41.2],
+            [-70.123456, 41.2],
+            [-70.123456, 41.123456]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "SITE_ID": "DROP-CAT9",
+        "site_name": "Some EEZ Jurisdiction",
+        "category_name": "Jurisdictional Authority Area",
+        "marine_area": 10,
+        "entry": 1
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+            [0, 0]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "SITE_ID": "DROP-BIG",
+        "site_name": "Ocean Basin FMA",
+        "category_name": "Fisheries Management Area",
+        "marine_area": 60000,
+        "entry": 0,
+        "anchoring": 0,
+        "commercial_fishing": 2
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [10, 10],
+            [20, 10],
+            [20, 20],
+            [10, 20],
+            [10, 10]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "SITE_ID": "KEEP-BIG-HARDBAN",
+        "site_name": "Giant No-Anchor Zone",
+        "category_name": "Vessel Restricted Area",
+        "marine_area": 60000,
+        "anchoring": 1
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [30, 30],
+              [31, 30],
+              [31, 31],
+              [30, 31],
+              [30, 30]
+            ]
+          ],
+          [
+            [
+              [40, 40],
+              [41, 40],
+              [41, 41],
+              [40, 41],
+              [40, 40]
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}
