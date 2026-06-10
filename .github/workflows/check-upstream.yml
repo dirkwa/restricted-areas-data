@@ -1,10 +1,11 @@
 name: check-upstream
 
-# Monthly probe: has Navigator published a newer dataset than we last built?
-# Scrapes only the data-request page for its advertised dataset date and
-# compares it to the datasetDate in our latest published manifest. Opens (or
-# updates) a single tracking issue when upstream is newer. It NEVER downloads
-# the terms-gated dataset; a human still has to click I-AGREE.
+# Monthly cross-check: has Navigator published a newer dataset than we serve?
+# The weekly sync.yml normally picks changes up via the API; this independent
+# probe scrapes the data-request page's advertised dataset date and compares it
+# to the datasetDate in our latest published manifest, catching the case where
+# the API lags or the sync is broken. Opens (or updates) a single tracking
+# issue when upstream is newer. It NEVER downloads the terms-gated dataset.
 on:
   schedule:
     - cron: '17 6 1 * *'
@@ -45,7 +46,7 @@ jobs:
           body=$(cat <<EOF
           Navigator advertises dataset date **$UPSTREAM_DATE**; the latest published manifest is **$PUBLISHED_DATE**.
 
-          To ingest: read the runbook in README.md, click I-AGREE at https://navigatormap.org/data-request, upload the raw zip to a staging release, then dispatch \`build.yml\`.
+          The weekly \`sync.yml\` should have picked this up via the API — if this issue appears, the sync is lagging or broken. Check recent sync runs first. Manual fallback: read the runbook in README.md, click I-AGREE at https://navigatormap.org/data-request, upload the raw zip to a staging release, then dispatch \`seed-mirror.yml\` (re-seed) and \`build.yml\`.
 
           This issue is updated by the monthly \`check-upstream\` workflow; it does not download anything.
           EOF

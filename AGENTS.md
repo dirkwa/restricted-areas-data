@@ -35,16 +35,54 @@ same warning at the top. A golden test in `test/normalize.test.mjs` asserts
 ## Pipeline shape
 
 A streaming job graph. The expensive global pass runs once; per-region work fans out.
+Since the API-sync rework the build is **source-agnostic**: it consumes either a staged
+bulk download zip or the **dataset mirror** that the weekly sync keeps current.
 
 ```
-prepare      stream-unzip each member → normalize.mjs (decode + exclusions +
-             MultiPolygon explode) → region-tag.mjs → per-region NDJSON + exclusions.json
+seed (once)  stream-unzip each member → seed-mirror.mjs → NDJSON.gz mirror shards +
+             mirror-index.json (+state) → DRAFT release `mirror` (not publicly listed)
+sync (weekly) sync-mirror.mjs: sweep the full API catalog index (~55 paced req) →
+             diff vs mirror-index → fetch detail+boundary per added/changed site →
+             rewrite shards (refreshed sites land in updates.ndjson.gz) → upload →
+             on change: call build.yml (workflow_call) with publish=true
+prepare      (staging-zip) stream-unzip member → normalize.mjs, or
+             (mirror) gunzip shard → normalize.mjs --format ndjson
+             → region-tag.mjs → per-region NDJSON + exclusions.json + provenance.json
 build-region (matrix, one per region) NDJSON → FlatGeobuf (full + display variants);
              sub-split guard if a region FGB would exceed the 2 GB asset limit;
              emit a <region>.meta.json sidecar (bbox + featureCount)
 publish      build-index + make-manifest.mjs → manifest.json + LICENSE-DATA.md;
              gh release create <version_tag> with the FGBs + manifest
 ```
+
+### The mirror + API sync (the automation layer)
+
+- The mirror stores **download-schema** GeoJSON Features (one per line, gzipped per
+  partition). API responses are adapted INTO that schema by
+  [bin/lib/api-map.mjs](bin/lib/api-map.mjs) — renames (`ps_id→SITE_ID`,
+  `total_marine_area→marine_area`, `percent_marine_area→percent_marine`,
+  `location_type→site_location`, `tribal_exemptions→tribal`), string→number coercion
+  (the API stringifies every numeric; wdpa_id is deliberately NOT coerced), and
+  Z-coordinate strip (API boundaries are 3D). The adapter is pinned by a golden test
+  against a real API response verified field-by-field against the same site in the
+  bulk download.
+- The API uses the SAME activity coding key as the download (0/1/2/3/null, 1=PROHIBITED).
+- Rate limit: 5 requests / 10 s per IP. ALL API traffic goes through
+  [bin/lib/api-client.mjs](bin/lib/api-client.mjs) (serialized, 2.5 s spacing, backoff).
+  Never call the API outside it.
+- Diffing is version-first (`site_major_version`/`site_minor_version`), `last_update`
+  as tiebreak. Sanity guards in [bin/sweep.mjs](bin/sweep.mjs) refuse half-empty sweeps
+  and mass removals — never weaken them; a broken sweep must not cascade into deleting
+  the mirror or publishing a gutted release.
+- Boundaries from MarViva/WDPA/CBD CHM sources are withheld by the API: changed sites
+  keep their previously mirrored geometry; NEW sites without geometry wait in
+  mirror-state.geometryUnavailable and are retried every sync.
+- Excluded partitions (HighSeas) are not mirrored at all — re-seed from a fresh bulk
+  download if mapping.json's partition exclusion is ever unlocked. The API catalog has no
+  partition concept, so the sync mirrors that exclusion by country: sweep entries with
+  `country === 'High Seas / International'` (verified: 701/704 of the HighSeas member,
+  zero false positives elsewhere) are never diffed, fetched, or indexed
+  ([bin/lib/partition.mjs](bin/lib/partition.mjs) `isHighSeasCountry`).
 
 No PMTiles in v1 — Freeboard consumes the polygons via the plugin's Resources API, so no tile
 layer is built. With the exclusions applied (below), regional FGBs stay well under the asset
@@ -109,28 +147,42 @@ not affect tagging.
   CC BY 4.0 attribution + 3 citations + disclaimer). The plugin downloads this to discover the
   available regions.
 - [bin/merge-exclusions.mjs](bin/merge-exclusions.mjs) — sums per-partition exclusion tallies.
+- [bin/seed-mirror.mjs](bin/seed-mirror.mjs) + [bin/make-mirror-state.mjs](bin/make-mirror-state.mjs)
+  — bootstrap the mirror shards/index/state from a staged bulk download (streaming).
+- [bin/sync-mirror.mjs](bin/sync-mirror.mjs) — the weekly API sync orchestrator (sweep →
+  diff → refresh → shard rewrite → upload → GH-Actions outputs). Uses the gh CLI.
+- [bin/sweep.mjs](bin/sweep.mjs) — catalog index sweep + diff + sanity guards.
+- [bin/lib/api-client.mjs](bin/lib/api-client.mjs) / [bin/lib/api-map.mjs](bin/lib/api-map.mjs)
+  — paced API client and the API→download-schema adapter (see automation layer above).
 - [bin/check-upstream.mjs](bin/check-upstream.mjs) — download-free: scrapes the data-request
-  page for the dataset date, compares to the published manifest, signals when newer (drives the
-  monthly issue-opening cron).
+  page for the dataset date, compares to the published manifest, signals when newer (now a
+  monthly cross-check that the weekly API sync isn't lagging/broken).
 - [mapping.json](mapping.json) — the load-bearing decode + exclusion contract, shared in spirit
   with the plugin's schema.ts.
 - [regions/regions.geojson](regions/regions.geojson), [pipeline.config.json](pipeline.config.json),
   [pipeline.config.schema.json](pipeline.config.schema.json) — region polygons + tunables.
-- [.github/workflows/build.yml](.github/workflows/build.yml) — `workflow_dispatch` (inputs:
-  raw_release_tag, dataset_date, download_date, version_tag); the prepare → build-region →
-  publish graph above.
+- [.github/workflows/build.yml](.github/workflows/build.yml) — `workflow_dispatch` +
+  `workflow_call` (inputs: source staging-zip|mirror, version_tag, publish, …); the
+  prepare → build-region → publish graph above.
+- [.github/workflows/seed-mirror.yml](.github/workflows/seed-mirror.yml) — one-time/recovery
+  bootstrap: staged raw zip → draft `mirror` release.
+- [.github/workflows/sync.yml](.github/workflows/sync.yml) — weekly cron (Mon 06:23 UTC) +
+  dispatch (with dry_run): sync-mirror.mjs, then calls build.yml with publish=true when
+  anything changed. Opens/updates a `sync-failure` issue on failure.
 - [.github/workflows/check-upstream.yml](.github/workflows/check-upstream.yml) — monthly cron;
   opens/updates ONE issue when upstream is newer. Never downloads.
 - [test/](test/) — vitest over the bin scripts (decode golden, exclusion firing, MultiPolygon
   explode, region tagging incl. the Fiji/antimeridian case, manifest helpers, check-upstream).
 
-## Ingest runbook (the human step)
+## Bootstrap runbook (the human step)
 
-The raw download is terms-gated. A maintainer downloads the Navigator GeoJSON zip from
+Only the mirror seed needs a human; everything after is the weekly sync. The raw download is
+terms-gated: a maintainer downloads the Navigator GeoJSON zip from
 `https://navigatormap.org/data-request` after clicking **"I AGREE"**, records the download
 date (for the citation), uploads the zip to a private staging GitHub Release
-(`staging-raw-<datecode>`), then dispatches `build.yml`. The dataset date code (e.g. `052826`
-= 2026-05-28) becomes the version tag `v2026.05`.
+(`staging-raw-<datecode>`), then dispatches `seed-mirror.yml`. First publish: dispatch
+`build.yml` with `source: mirror` + `publish: true` (auto tags use `vYYYY.MM.DD`), or wait
+for the next weekly sync to find a change.
 
 ## Build, lint, test
 

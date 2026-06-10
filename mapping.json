@@ -1,5 +1,6 @@
 {
   "_WARNING": "COUNTERINTUITIVE CODING. For all 43 coded fishing+marine-activity columns: 0 = ALLOWED, 1 = PROHIBITED, 2 = RESTRICTED, 3 = N/A or UNKNOWN, null = NOT-YET-CODED (treat as N/A). 1 MEANS PROHIBITED. A truthy test (`if (props.anchoring)`) is a SAFETY BUG. Every coded column MUST pass through levelOf(). Golden test asserts levelOf(1)==='prohibited'.",
+  "_PARITY": "This contract has FOUR corners that must stay in lockstep: bin/lib/decode.mjs, the plugin's src/schema.ts, this file, and bin/lib/api-map.mjs (the Navigator API uses the SAME coding key but renames 5 fields and stringifies all numerics; api-map adapts API records into the download schema everything else consumes). Change one, check all four.",
   "datasetDate": "2026-05-28",
   "versionTag": "v2026.05",
   "levelOf": "v===0?'allowed':v===1?'prohibited':v===2?'restricted':v===3?'unknown':'na'",

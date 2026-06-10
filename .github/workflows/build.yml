@@ -1,26 +1,48 @@
 name: build
 
-# Manual, gated build. The raw Navigator download is terms-of-use gated
-# (a human must click I-AGREE at navigatormap.org/data-request and upload the
-# zip to a staging release). This workflow turns that staged raw zip into the
-# published per-region FlatGeobuf extracts. It never downloads from Navigator.
+# Build the published per-region FlatGeobuf extracts from one of two sources:
+#   - staging-zip: a staged bulk Navigator download (terms-of-use gated; a
+#     human clicked I-AGREE and uploaded the zip to a staging release)
+#   - mirror: the draft mirror release that sync.yml keeps current via the
+#     public Navigator API (the fully automated path)
+# Manually dispatchable, and callable as a reusable workflow by sync.yml.
+# It never downloads from navigatormap.org.
 on:
   workflow_dispatch:
     inputs:
+      source:
+        description: 'Input dataset: the staged raw zip, or the API-synced mirror'
+        type: choice
+        options: [staging-zip, mirror]
+        default: staging-zip
       raw_release_tag:
-        description: 'Staging release tag holding the raw Navigator zip asset (named navigator-raw.zip)'
-        required: true
+        description: 'staging-zip only: staging release tag holding navigator-raw.zip'
+        required: false
       dataset_date:
-        description: 'Navigator dataset date (ISO, from the data-request page)'
-        required: true
+        description: 'Navigator dataset date (ISO; staging-zip only — mirror builds read it from mirror-state.json)'
+        required: false
       download_date:
-        description: 'Date the maintainer clicked I-AGREE and downloaded (ISO)'
-        required: true
+        description: 'staging-zip only: date the maintainer clicked I-AGREE and downloaded (ISO)'
+        required: false
       version_tag:
         description: 'Release tag to publish (e.g. v2026.05)'
         required: true
       publish:
-        description: 'Create a PUBLIC GitHub release. Leave false to only build artifacts (the data redistribution posture is not yet settled — see README).'
+        description: 'Create a PUBLIC GitHub release. Leave false to only build artifacts.'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      source:
+        type: string
+        default: mirror
+      dataset_date:
+        type: string
+        required: false
+      version_tag:
+        type: string
+        required: true
+      publish:
         type: boolean
         default: false
 
@@ -49,11 +71,13 @@ jobs:
         run: npm run build:all
 
       - name: Download staged raw zip
+        if: ${{ inputs.source != 'mirror' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "${{ inputs.raw_release_tag }}" --pattern "$RAW_ZIP" --output "$RAW_ZIP" --clobber
 
-      - name: Normalize + region-tag
+      - name: Normalize + region-tag (staging zip)
+        if: ${{ inputs.source != 'mirror' }}
         run: |
           mkdir -p work/regions
           # Stream each member out of the zip and normalize it without ever
@@ -68,6 +92,36 @@ jobs:
                   --out-display work/"$partition".display.ndjson \
                   --exclusions work/"$partition".exclusions.json
           done
+          # Provenance for make-manifest, same shape the mirror path provides.
+          jq -n --arg d "${{ inputs.dataset_date }}" --arg dl "${{ inputs.download_date }}" \
+            --arg from "${{ inputs.raw_release_tag }}" \
+            '{datasetDate: $d, downloadDate: $dl, generatedFrom: $from}' > work/provenance.json
+
+      - name: Normalize + region-tag (mirror)
+        if: ${{ inputs.source == 'mirror' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p work/mirror work/regions
+          gh release download mirror --dir work/mirror --clobber \
+            --pattern '*.ndjson.gz' --pattern 'mirror-state.json'
+          # Same streaming pipeline; the mirror packages one feature per line.
+          for shard in work/mirror/*.ndjson.gz; do
+            partition="$(basename "$shard" .ndjson.gz)"
+            gunzip -c "$shard" \
+              | node bin/normalize.mjs \
+                  --format ndjson \
+                  --partition "$partition" \
+                  --out-full work/"$partition".full.ndjson \
+                  --out-display work/"$partition".display.ndjson \
+                  --exclusions work/"$partition".exclusions.json
+          done
+          jq --arg d "${{ inputs.dataset_date }}" \
+            '{datasetDate: (if $d == "" then .datasetDate else $d end), downloadDate: .downloadDate, generatedFrom: ("mirror, seeded from " + .seededFrom + ", last sweep " + (.lastSweepDate // "never"))}' \
+            work/mirror/mirror-state.json > work/provenance.json
+
+      - name: Region-tag + merge exclusions
+        run: |
           cat work/*.full.ndjson | node bin/region-tag.mjs --outdir work/regions --suffix full
           cat work/*.display.ndjson | node bin/region-tag.mjs --outdir work/regions --suffix display
           node bin/merge-exclusions.mjs work/*.exclusions.json > work/exclusions.json
@@ -84,6 +138,7 @@ jobs:
           path: |
             work/regions/*.ndjson
             work/exclusions.json
+            work/provenance.json
           retention-days: 1
 
   build-region:
@@ -176,19 +231,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Provenance (dataset/download dates, source description) was decided
+          # by the prepare job — identical handling for both sources.
+          dataset_date="$(jq -r .datasetDate work/provenance.json)"
+          download_date="$(jq -r .downloadDate work/provenance.json)"
+          generated_from="$(jq -r .generatedFrom work/provenance.json)"
           # Compose the make-manifest index: per-region asset list with the
           # bbox/featureCount read back from each FGB via ogrinfo.
           node bin/build-index.mjs \
             --dist dist \
             --exclusions work/exclusions.json \
-            --generated-from "${{ inputs.raw_release_tag }}" \
+            --generated-from "$generated_from" \
             > dist/index.json
           node bin/make-manifest.mjs \
             --index dist/index.json \
             --version "${{ inputs.version_tag }}" \
-            --dataset-date "${{ inputs.dataset_date }}" \
-            --download-date "${{ inputs.download_date }}" \
-            --generated-from "${{ inputs.raw_release_tag }}" \
+            --dataset-date "$dataset_date" \
+            --download-date "$download_date" \
+            --generated-from "$generated_from" \
             > dist/manifest.json
           cp LICENSE-DATA.md dist/LICENSE-DATA.md
 
@@ -212,7 +272,8 @@ jobs:
           if gh release view "${{ inputs.version_tag }}" >/dev/null 2>&1; then
             gh release delete "${{ inputs.version_tag }}" --yes --cleanup-tag
           fi
+          dataset_date="$(jq -r .datasetDate work/provenance.json)"
           gh release create "${{ inputs.version_tag }}" \
             --title "${{ inputs.version_tag }}" \
-            --notes "ProtectedSeas Navigator regional FlatGeobuf extracts. Dataset ${{ inputs.dataset_date }}. CC BY 4.0 — see LICENSE-DATA.md." \
+            --notes "ProtectedSeas Navigator regional FlatGeobuf extracts. Dataset $dataset_date. CC BY 4.0 — see LICENSE-DATA.md." \
             dist/*.fgb dist/manifest.json dist/LICENSE-DATA.md

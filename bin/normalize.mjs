@@ -18,7 +18,8 @@
  *   node bin/normalize.mjs --input <file.json> --partition <LFP3|HighSeas|...> \
  *     --out-full <full.ndjson> --out-display <display.ndjson> --exclusions <drops.json>
  *
- * --input omitted or '-' reads from stdin.
+ * --input omitted or '-' reads from stdin. --format ndjson reads one GeoJSON
+ * Feature per line (the mirror shard format) instead of a FeatureCollection.
  */
 
 import fs from 'node:fs'
@@ -27,9 +28,11 @@ import { dirname, join } from 'node:path'
 import streamJson from 'stream-json'
 import Pick from 'stream-json/filters/Pick.js'
 import StreamArray from 'stream-json/streamers/StreamArray.js'
+import StreamValues from 'stream-json/streamers/StreamValues.js'
 import bbox from '@turf/bbox'
 import simplify from '@turf/simplify'
 import { normalizeProps, categoryIdOf } from './lib/decode.mjs'
+import { isExcludedPartition } from './lib/partition.mjs'
 
 // stream-json is CommonJS; its default export carries the factory functions.
 const { parser } = streamJson
@@ -204,7 +207,7 @@ async function run() {
   const counts = { featuresIn: 0, kept: 0, componentsFull: 0, componentsDisplay: 0 }
 
   // Whole-partition exclusion (HighSeas): consume nothing, record the drop, exit.
-  if (EXCLUDE.partitions.includes(partition)) {
+  if (isExcludedPartition(partition, EXCLUDE.partitions)) {
     drops.partition = 1
     writeJson(args.exclusions, { partition, drops, counts, excludedPartition: true })
     outFull.end()
@@ -212,11 +215,18 @@ async function run() {
     return
   }
 
-  // Stream the features array; the StreamArray transform is the async iterable.
-  const features = inputStream(args.input)
-    .pipe(parser())
-    .pipe(new Pick({ filter: 'features' }))
-    .pipe(new StreamArray())
+  // Stream the input features. FeatureCollection input picks the `features`
+  // array; NDJSON input (mirror shards) parses each line as its own JSON doc —
+  // both yield { value } items, and both stay memory-flat on multi-GB input.
+  const features =
+    args.format === 'ndjson'
+      ? inputStream(args.input)
+          .pipe(parser({ jsonStreaming: true }))
+          .pipe(new StreamValues())
+      : inputStream(args.input)
+          .pipe(parser())
+          .pipe(new Pick({ filter: 'features' }))
+          .pipe(new StreamArray())
 
   for await (const { value } of features) {
     counts.featuresIn += 1

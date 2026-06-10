@@ -5,14 +5,27 @@ Data pipeline that turns the ProtectedSeas Navigator GeoJSON dump into per-regio
 [`signalk-restricted-areas`](https://github.com/dirkwa/signalk-restricted-areas)
 plugin. No PMTiles in v1.
 
-The raw Navigator download is terms-of-use gated and large (~2.5 GB zipped,
-~6.7 GB expanded). It is never committed and never fetched by CI. A human runs
-the gated steps; the workflow only transforms an already-staged raw zip.
+The pipeline is **fully automated** after a one-time bootstrap: a weekly sync
+keeps a dataset mirror current via the public
+[Navigator Map API](https://protectedseas.gitbook.io/navigator-api-docs)
+(following its recommended
+[data-synchronization pattern](https://protectedseas.gitbook.io/navigator-api-docs/conventions/data-synchronization))
+and republishes the regional extracts whenever upstream sites change. The bulk
+Navigator download is only needed to (re)seed the mirror: it is terms-of-use
+gated and large (~2.5 GB zipped, ~6.7 GB expanded), never committed, and never
+fetched by CI — a human runs that gated step.
 
 ## Pipeline
 
 ```
-raw zip (staged)  ──normalize.mjs──▶  NDJSON (exploded, single-component)
+                       ┌──────────────  one-time bootstrap  ─────────────┐
+raw zip (staged)  ──seed-mirror.mjs──▶  dataset mirror (draft release:
+                                        NDJSON.gz shards + mirror-index.json)
+                                          ▲          │
+            weekly: sync-mirror.mjs ──────┘          │  (on change)
+            sweep API index, diff, refresh           │
+            changed sites, upsert shards             ▼
+                                  normalize.mjs ──▶ NDJSON (exploded, single-component)
                                           │
                                   region-tag.mjs
                                           │
@@ -21,9 +34,27 @@ raw zip (staged)  ──normalize.mjs──▶  NDJSON (exploded, single-compone
                           make-manifest.mjs  ──▶  manifest.json  +  LICENSE-DATA.md
 ```
 
+- **`bin/seed-mirror.mjs`** / **`bin/make-mirror-state.mjs`** — bootstrap the
+  mirror from a staged bulk download: one download-schema GeoJSON Feature per
+  line, gzipped per partition, plus a compact `mirror-index.json`
+  (`SITE_ID -> site version`) and a `mirror-state.json` provenance file. The
+  mirror lives in a **draft** GitHub release (`mirror`), reachable by CI but
+  not publicly listed.
+- **`bin/sync-mirror.mjs`** — the weekly refresh (`sync.yml`): sweeps the full
+  catalog index from the API (~55 paced requests), diffs against
+  `mirror-index.json`, fetches details + boundaries for added/changed sites
+  only, rewrites the shards, and triggers a rebuild + publish when anything
+  moved. Paced to stay well inside the API's 5-requests-per-10-s limit; sanity
+  guards refuse to sync from an implausible sweep (half-empty catalog, mass
+  removals).
+- **`bin/lib/api-client.mjs`** / **`bin/lib/api-map.mjs`** — paced/retrying API
+  client and the API→download-schema field adapter (renames, string→number
+  coercion, Z-coordinate strip). Sites whose boundary the API withholds
+  (MarViva/WDPA/CBD CHM sources) keep their previously mirrored geometry.
 - **`bin/normalize.mjs`** — decode the 43 coded columns, apply exclusions,
   explode `MultiPolygon` into single-component features, emit full + display
-  NDJSON and a per-partition `exclusions.json` tally.
+  NDJSON and a per-partition `exclusions.json` tally. Reads FeatureCollections
+  (bulk download) or NDJSON (`--format ndjson`, mirror shards).
 - **`bin/region-tag.mjs`** — route each component feature to exactly one region
   by testing its bbox-centroid against `regions/regions.geojson` (first match in
   array order wins). Antimeridian-spanning components resolve to `sw-pacific`;
@@ -32,12 +63,20 @@ raw zip (staged)  ──normalize.mjs──▶  NDJSON (exploded, single-compone
 - **`bin/build-index.mjs`** / **`bin/make-manifest.mjs`** — assemble and emit
   `manifest.json` (sha256, size, bbox, featureCount per asset; license,
   citations, disclaimer, attribution, exclusion tallies).
-- **`bin/check-upstream.mjs`** — monthly probe comparing Navigator's advertised
-  dataset date to the published manifest; opens one tracking issue when newer.
+- **`bin/check-upstream.mjs`** — monthly cross-check comparing Navigator's
+  advertised dataset date to the published manifest; opens one tracking issue
+  when upstream is newer than what the sync delivered (catches a lagging or
+  broken sync).
 
-## Ingest runbook
+Each release's `manifest.json` records its Navigator extract date
+(`datasetDate`); the plugin surfaces that date to users so they always know the
+release date of the data they are navigating with.
+
+## Bootstrap runbook (seed or re-seed the mirror)
 
 This is the only part that needs a human, because of the I-AGREE click-through.
+It is needed once, and again only for recovery or if the locked partition
+exclusions ever change.
 
 1. **Accept the terms and download.** Go to
    https://navigatormap.org/data-request, read and accept the Terms of Use
@@ -47,18 +86,21 @@ This is the only part that needs a human, because of the I-AGREE click-through.
    `raw-2026.05`) and upload the unmodified Navigator zip as its only asset.
    Staging keeps the gated bytes out of git while making them reachable by the
    workflow's `GITHUB_TOKEN`.
-3. **Dispatch the build.** Run the `build.yml` workflow
-   (Actions ▸ build ▸ Run workflow) with:
+3. **Seed the mirror.** Run the `seed-mirror.yml` workflow
+   (Actions ▸ seed-mirror ▸ Run workflow) with:
    - `raw_release_tag` — the staging tag from step 2 (`raw-2026.05`)
    - `dataset_date` — the date from the data-request page (ISO, e.g. `2026-05-28`)
    - `download_date` — the date you clicked I-AGREE (ISO)
-   - `version_tag` — the release to publish (e.g. `v2026.05`)
-4. **Verify.** The workflow publishes `<version_tag>` with the regional FGBs,
+4. **Publish.** Dispatch `build.yml` with `source: mirror`, a `version_tag`
+   (e.g. `v2026.05`), and `publish: true` — or just let the next weekly `sync`
+   run do it. The workflow publishes `<version_tag>` with the regional FGBs,
    `manifest.json`, and `LICENSE-DATA.md`. The plugin consumes `manifest.json`.
 
-The `check-upstream` workflow runs monthly and opens an `upstream-update` issue
-when Navigator advertises a newer dataset date than the published manifest. It
-does not download anything; ingestion stays a deliberate human action.
+From then on the weekly `sync` workflow keeps everything current without human
+involvement; `check-upstream` runs monthly as an independent cross-check and
+opens an `upstream-update` issue if the published data ever lags what Navigator
+advertises. `build.yml` can still build straight from a staged zip
+(`source: staging-zip`) as a fallback.
 
 ## Exclusions
 

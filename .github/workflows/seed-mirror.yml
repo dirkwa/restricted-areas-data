@@ -1,0 +1,98 @@
+name: seed-mirror
+
+# One-time (or recovery) bootstrap of the dataset mirror from a staged bulk
+# Navigator download. The mirror — gzipped NDJSON shards of download-schema
+# features plus mirror-index.json/mirror-state.json — lives in a DRAFT release
+# so it is never publicly listed (the published regional extracts are; the
+# near-verbatim dataset copy is not). sync.yml keeps it current via the public
+# API between bulk downloads.
+on:
+  workflow_dispatch:
+    inputs:
+      raw_release_tag:
+        description: 'Staging release tag holding the raw Navigator zip asset (named navigator-raw.zip)'
+        required: true
+      dataset_date:
+        description: 'Navigator dataset date (ISO, from the data-request page)'
+        required: true
+      download_date:
+        description: 'Date the maintainer clicked I-AGREE and downloaded (ISO)'
+        required: true
+      mirror_tag:
+        description: 'Tag name of the draft mirror release'
+        default: 'mirror'
+
+permissions:
+  contents: write
+
+env:
+  RAW_ZIP: navigator-raw.zip
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Verify (lint + test)
+        run: npm run build:all
+
+      - name: Download staged raw zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RAW_TAG: ${{ inputs.raw_release_tag }}
+        run: gh release download "$RAW_TAG" --pattern "$RAW_ZIP" --output "$RAW_ZIP" --clobber
+
+      - name: Seed mirror shards
+        env:
+          DATASET_DATE: ${{ inputs.dataset_date }}
+          DOWNLOAD_DATE: ${{ inputs.download_date }}
+          SEEDED_FROM: ${{ inputs.raw_release_tag }}
+        run: |
+          mkdir -p work/mirror
+          # Stream each member straight out of the zip; excluded partitions
+          # (mapping.json exclude.partitions) yield only an index fragment.
+          for member in $(unzip -Z1 "$RAW_ZIP" | grep -E '\.json$'); do
+            partition="$(basename "$member" .json)"
+            unzip -p "$RAW_ZIP" "$member" \
+              | node bin/seed-mirror.mjs \
+                  --partition "$partition" \
+                  --out work/mirror/"$partition".ndjson.gz \
+                  --index-out work/mirror/"$partition".index.json
+          done
+          node bin/make-mirror-state.mjs \
+            --dataset-date "$DATASET_DATE" \
+            --download-date "$DOWNLOAD_DATE" \
+            --seeded-from "$SEEDED_FROM" \
+            --mirror-dir work/mirror \
+            work/mirror/*.index.json
+
+      - name: Create or replace the draft mirror release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIRROR_TAG: ${{ inputs.mirror_tag }}
+          RAW_TAG: ${{ inputs.raw_release_tag }}
+          DATASET_DATE: ${{ inputs.dataset_date }}
+        run: |
+          # Drafts can pile up under the same tag name; delete any existing
+          # draft mirror release(s) by id before recreating.
+          for id in $(gh api "repos/${{ github.repository }}/releases" --paginate \
+                        | jq --arg tag "$MIRROR_TAG" '.[] | select(.draft and .tag_name==$tag) | .id'); do
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id"
+          done
+          gh release create "$MIRROR_TAG" \
+            --draft \
+            --title "Dataset mirror (not a published release)" \
+            --notes "Canonical Navigator dataset mirror used by the automated sync. Seeded from $RAW_TAG (dataset $DATASET_DATE); kept current weekly by sync.yml via the public Navigator API. Not for public consumption — use the versioned regional releases instead." \
+            work/mirror/*.ndjson.gz \
+            work/mirror/mirror-index.json \
+            work/mirror/mirror-state.json
