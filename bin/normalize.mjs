@@ -32,6 +32,7 @@ import StreamValues from 'stream-json/streamers/StreamValues.js'
 import bbox from '@turf/bbox'
 import simplify from '@turf/simplify'
 import { normalizeProps, categoryIdOf } from './lib/decode.mjs'
+import { isExcludedPartition } from './lib/partition.mjs'
 
 // stream-json is CommonJS; its default export carries the factory functions.
 const { parser } = streamJson
@@ -206,7 +207,7 @@ async function run() {
   const counts = { featuresIn: 0, kept: 0, componentsFull: 0, componentsDisplay: 0 }
 
   // Whole-partition exclusion (HighSeas): consume nothing, record the drop, exit.
-  if (EXCLUDE.partitions.includes(partition)) {
+  if (isExcludedPartition(partition, EXCLUDE.partitions)) {
     drops.partition = 1
     writeJson(args.exclusions, { partition, drops, counts, excludedPartition: true })
     outFull.end()

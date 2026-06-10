@@ -26,6 +26,7 @@ import { dirname, join } from 'node:path'
 import streamJson from 'stream-json'
 import Pick from 'stream-json/filters/Pick.js'
 import StreamArray from 'stream-json/streamers/StreamArray.js'
+import { isExcludedPartition } from './lib/partition.mjs'
 
 const { parser } = streamJson
 
@@ -86,7 +87,7 @@ async function run() {
   const args = parseArgs(process.argv.slice(2))
   const partition = args.partition
 
-  if (EXCLUDE.partitions.includes(partition)) {
+  if (isExcludedPartition(partition, EXCLUDE.partitions)) {
     fs.writeFileSync(
       args['index-out'],
       JSON.stringify({ partition, skipped: true, sites: {} }, null, 2) + '\n'
