@@ -25,12 +25,15 @@ const DEFAULT_REGIONS = join(HERE, '..', 'regions', 'regions.geojson')
 const OTHER = 'other'
 
 function parseArgs(argv) {
-  const args = { input: null, outdir: null, regions: DEFAULT_REGIONS }
+  const args = { input: null, outdir: null, regions: DEFAULT_REGIONS, suffix: '' }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--input') args.input = argv[++i]
     else if (a === '--outdir') args.outdir = argv[++i]
     else if (a === '--regions') args.regions = argv[++i]
+    // --suffix full|display routes into <region>.<suffix>.ndjson so the full and
+    // display variants land in distinct files for separate FGB builds.
+    else if (a === '--suffix') args.suffix = argv[++i]
     else throw new Error(`unknown argument: ${a}`)
   }
   if (!args.outdir) throw new Error('missing required --outdir')
@@ -118,15 +121,16 @@ function regionFor(feature, regions) {
 }
 
 class RegionWriters {
-  constructor(outdir) {
+  constructor(outdir, suffix = '') {
     this.outdir = outdir
+    this.infix = suffix ? `.${suffix}` : ''
     this.streams = new Map()
     this.counts = new Map()
   }
   write(region, line) {
     let stream = this.streams.get(region)
     if (!stream) {
-      stream = createWriteStream(join(this.outdir, `${region}.ndjson`))
+      stream = createWriteStream(join(this.outdir, `${region}${this.infix}.ndjson`))
       this.streams.set(region, stream)
       this.counts.set(region, 0)
     }
@@ -145,7 +149,7 @@ class RegionWriters {
 async function run(args) {
   mkdirSync(args.outdir, { recursive: true })
   const regions = loadRegions(args.regions)
-  const writers = new RegionWriters(args.outdir)
+  const writers = new RegionWriters(args.outdir, args.suffix)
   const source = args.input ? createReadStream(args.input) : process.stdin
   const rl = createInterface({ input: source, crlfDelay: Infinity })
 

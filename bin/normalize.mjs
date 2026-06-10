@@ -39,6 +39,21 @@ const EXCLUDE = JSON.parse(fs.readFileSync(join(__dirname, '..', 'mapping.json')
 
 const DISPLAY_DECIMALS = 5
 
+// FlatGeobuf columns must be scalar — it has no list/struct field type. These
+// normalized fields are objects/arrays, so we serialize them to JSON strings on
+// write; the plugin's spatial-index parses them back on read. Keep this list in
+// sync with FGB_JSON_FIELDS in the plugin's src/spatial-index.ts.
+const FGB_JSON_FIELDS = ['restrictions', 'raw', 'sourceUrls', 'siteVersion']
+
+/** Replace object/array fields with JSON strings so ogr2ogr can write a FlatGeobuf. */
+function flattenForFgb(properties) {
+  const out = { ...properties }
+  for (const field of FGB_JSON_FIELDS) {
+    if (field in out) out[field] = JSON.stringify(out[field])
+  }
+  return out
+}
+
 function parseArgs(argv) {
   if (argv.length % 2 !== 0) throw new Error('arguments must be --key value pairs')
   const out = {}
@@ -121,7 +136,7 @@ function processFeature(feature) {
   const reason = dropReason(categoryId, rawProps, norm.restrictions)
   if (reason) return { drop: reason }
 
-  const properties = norm
+  const properties = flattenForFgb(norm)
   const full = []
   const display = []
   components(feature.geometry).forEach((component, componentIndex) => {
@@ -208,7 +223,15 @@ function writeJson(path, obj) {
 }
 
 // Exported for tests; the pure per-feature transform is the testable core.
-export { processFeature, dropReason, components, roundPolygon, marineAreaKm2 }
+export {
+  processFeature,
+  dropReason,
+  components,
+  roundPolygon,
+  marineAreaKm2,
+  flattenForFgb,
+  FGB_JSON_FIELDS
+}
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   run().catch((err) => {

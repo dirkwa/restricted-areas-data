@@ -19,6 +19,10 @@ on:
       version_tag:
         description: 'Release tag to publish (e.g. v2026.05)'
         required: true
+      publish:
+        description: 'Create a PUBLIC GitHub release. Leave false to only build artifacts (the data redistribution posture is not yet settled — see README).'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -55,8 +59,8 @@ jobs:
           # Stream each member out of the zip and normalize it without ever
           # holding the 6.7 GB expansion on disk at once. normalize.mjs writes
           # exploded single-component NDJSON; region-tag routes by centroid.
-          for member in $(unzip -Z1 "$RAW_ZIP" | grep -E '\.geojson$'); do
-            partition="$(basename "$member" .geojson)"
+          for member in $(unzip -Z1 "$RAW_ZIP" | grep -E '\.json$'); do
+            partition="$(basename "$member" .json)"
             unzip -p "$RAW_ZIP" "$member" \
               | node bin/normalize.mjs \
                   --partition "$partition" \
@@ -64,13 +68,14 @@ jobs:
                   --out-display work/"$partition".display.ndjson \
                   --exclusions work/"$partition".exclusions.json
           done
-          cat work/*.full.ndjson | node bin/region-tag.mjs --outdir work/regions
+          cat work/*.full.ndjson | node bin/region-tag.mjs --outdir work/regions --suffix full
+          cat work/*.display.ndjson | node bin/region-tag.mjs --outdir work/regions --suffix display
           node bin/merge-exclusions.mjs work/*.exclusions.json > work/exclusions.json
 
       - name: Determine regions produced
         id: regions
         run: |
-          list="$(ls work/regions/*.ndjson | xargs -n1 basename | sed 's/\.ndjson$//' | jq -R . | jq -cs .)"
+          list="$(ls work/regions/*.full.ndjson | xargs -n1 basename | sed 's/\.full\.ndjson$//' | jq -R . | jq -cs .)"
           echo "list=$list" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
@@ -110,19 +115,15 @@ jobs:
           REGION: ${{ matrix.region }}
         run: |
           mkdir -p dist
-          src="work/regions/$REGION.ndjson"
-          # ogr2ogr reads NDJSON via GeoJSONSeq; one full-fidelity FGB plus a
-          # coordinate-thinned display FGB (tolerance/precision from
-          # pipeline.config.json) for low-bandwidth onboard rendering.
-          tol="$(jq -r '.simplify.displayToleranceDeg' pipeline.config.json)"
-          prec="$(jq -r '.simplify.displayPrecision' pipeline.config.json)"
-          ogr2ogr -f FlatGeobuf "dist/$REGION.fgb" "GeoJSONSeq:$src"
-          ogr2ogr -f FlatGeobuf \
-            -simplify "$tol" \
-            -lco "COORDINATE_PRECISION=$prec" \
-            "dist/$REGION.display.fgb" "GeoJSONSeq:$src"
+          full="work/regions/$REGION.full.ndjson"
+          display="work/regions/$REGION.display.ndjson"
+          # ogr2ogr reads NDJSON via GeoJSONSeq. The non-scalar fields were already
+          # JSON-encoded by normalize (FGB has no list/struct column type) and the
+          # display geometry was coordinate-rounded upstream.
+          ogr2ogr -f FlatGeobuf "dist/$REGION.fgb" "GeoJSONSeq:$full"
+          ogr2ogr -f FlatGeobuf "dist/$REGION.display.fgb" "GeoJSONSeq:$display"
           # bbox + featureCount sidecar that build-index folds into the manifest.
-          node bin/region-meta.mjs --region "$REGION" --input "$src" > "dist/$REGION.meta.json"
+          node bin/region-meta.mjs --region "$REGION" --input "$full" > "dist/$REGION.meta.json"
 
       - name: Sub-split guard (>1.9 GB)
         env:
@@ -191,7 +192,19 @@ jobs:
             > dist/manifest.json
           cp LICENSE-DATA.md dist/LICENSE-DATA.md
 
+      # Always keep the built output as a (non-public) workflow artifact so a
+      # build-only run is inspectable without publishing anything.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: |
+            dist/*.fgb
+            dist/manifest.json
+            dist/LICENSE-DATA.md
+          retention-days: 7
+
       - name: Publish release
+        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

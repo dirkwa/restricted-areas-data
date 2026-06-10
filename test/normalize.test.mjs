@@ -12,7 +12,14 @@ import {
   categoryIdOf,
   normalizeProps
 } from '../bin/lib/decode.mjs'
-import { processFeature, components, roundPolygon, marineAreaKm2 } from '../bin/normalize.mjs'
+import {
+  processFeature,
+  components,
+  roundPolygon,
+  marineAreaKm2,
+  flattenForFgb,
+  FGB_JSON_FIELDS
+} from '../bin/normalize.mjs'
 
 const execFileAsync = promisify(execFile)
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -338,5 +345,60 @@ describe('end-to-end normalize.mjs over a fixture file', () => {
     const manifest = JSON.parse(fs.readFileSync(hsExcl, 'utf8'))
     expect(manifest.excludedPartition).toBe(true)
     expect(manifest.drops.partition).toBe(1)
+  })
+})
+
+describe('flattenForFgb — FlatGeobuf has no list/struct column type', () => {
+  it('JSON-stringifies exactly the non-scalar fields, leaving scalars untouched', () => {
+    const props = {
+      siteId: 'X1',
+      name: 'Test',
+      lfp: 3,
+      restrictions: { anchoring: 'prohibited' },
+      raw: { anchoring: 'prohibited' },
+      sourceUrls: ['https://a', 'https://b'],
+      siteVersion: { major: 2, minor: 0 }
+    }
+    const flat = flattenForFgb(props)
+    for (const field of FGB_JSON_FIELDS) {
+      expect(typeof flat[field]).toBe('string')
+    }
+    // Scalars survive as-is.
+    expect(flat.siteId).toBe('X1')
+    expect(flat.lfp).toBe(3)
+    // Round-trips losslessly.
+    expect(JSON.parse(flat.restrictions)).toEqual({ anchoring: 'prohibited' })
+    expect(JSON.parse(flat.sourceUrls)).toEqual(['https://a', 'https://b'])
+    expect(JSON.parse(flat.siteVersion)).toEqual({ major: 2, minor: 0 })
+  })
+
+  it('processFeature output carries only FGB-writable property values', () => {
+    const feature = {
+      type: 'Feature',
+      properties: {
+        SITE_ID: 'Y1',
+        site_name: 'Y',
+        category_name: 'Marine Protected Area',
+        anchoring: 1
+      },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 1],
+            [0, 0]
+          ]
+        ]
+      }
+    }
+    const out = processFeature(feature)
+    const props = out.full[0].properties
+    // Nothing left as an object/array — ogr2ogr would otherwise reject the layer.
+    for (const [, v] of Object.entries(props)) {
+      expect(Array.isArray(v) || (v !== null && typeof v === 'object')).toBe(false)
+    }
   })
 })
