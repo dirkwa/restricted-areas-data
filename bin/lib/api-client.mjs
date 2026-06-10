@@ -19,7 +19,8 @@ const DEFAULTS = {
   intervalMs: 2500,
   retries: 4,
   backoffBaseMs: 5000,
-  rateLimitPauseMs: 30000
+  rateLimitPauseMs: 30000,
+  requestTimeoutMs: 60000
 }
 
 /**
@@ -34,6 +35,7 @@ export function createApiClient({
   retries = DEFAULTS.retries,
   backoffBaseMs = DEFAULTS.backoffBaseMs,
   rateLimitPauseMs = DEFAULTS.rateLimitPauseMs,
+  requestTimeoutMs = DEFAULTS.requestTimeoutMs,
   now = () => Date.now()
 } = {}) {
   let chain = Promise.resolve()
@@ -45,7 +47,12 @@ export function createApiClient({
     if (wait > 0) await sleepImpl(wait)
     lastStart = now()
     stats.requests += 1
-    return fetchImpl(url, { headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' } })
+    // A hung request would wedge the serialized chain; cap it so the
+    // retry/backoff path takes over instead.
+    return fetchImpl(url, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+      signal: AbortSignal.timeout(requestTimeoutMs)
+    })
   }
 
   async function getWithRetry(url) {

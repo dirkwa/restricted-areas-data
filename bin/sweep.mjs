@@ -87,7 +87,10 @@ export function diffIndex(mirror, api) {
     if (versionBump || dateBump) changed.push(id)
   }
   for (const id of m.keys()) {
-    if (!a.has(id)) removed.push(id)
+    // A mirrored site that upstream reclassified as high-seas must be pruned,
+    // not retained — to the mirror it is as gone as a deleted site.
+    const apiEntry = a.get(id)
+    if (!apiEntry || apiEntry.hs) removed.push(id)
   }
   return { added, changed, removed }
 }

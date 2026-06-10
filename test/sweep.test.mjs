@@ -81,6 +81,13 @@ describe('diffIndex', () => {
     const diff = diffIndex({}, api)
     expect(diff.added).toEqual(['D'])
   })
+
+  it('removes a mirrored site that upstream reclassified as high-seas', () => {
+    const api = new Map([['HS1', { v: [2, 0], u: null, hs: true }]])
+    const diff = diffIndex({ HS1: { v: [1, 0], u: null } }, api)
+    expect(diff.removed).toEqual(['HS1'])
+    expect(diff.changed).toEqual([])
+  })
 })
 
 describe('sweepIndex marks high-seas sites', () => {

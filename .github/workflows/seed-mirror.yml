@@ -49,9 +49,14 @@ jobs:
       - name: Download staged raw zip
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download "${{ inputs.raw_release_tag }}" --pattern "$RAW_ZIP" --output "$RAW_ZIP" --clobber
+          RAW_TAG: ${{ inputs.raw_release_tag }}
+        run: gh release download "$RAW_TAG" --pattern "$RAW_ZIP" --output "$RAW_ZIP" --clobber
 
       - name: Seed mirror shards
+        env:
+          DATASET_DATE: ${{ inputs.dataset_date }}
+          DOWNLOAD_DATE: ${{ inputs.download_date }}
+          SEEDED_FROM: ${{ inputs.raw_release_tag }}
         run: |
           mkdir -p work/mirror
           # Stream each member straight out of the zip; excluded partitions
@@ -65,9 +70,9 @@ jobs:
                   --index-out work/mirror/"$partition".index.json
           done
           node bin/make-mirror-state.mjs \
-            --dataset-date "${{ inputs.dataset_date }}" \
-            --download-date "${{ inputs.download_date }}" \
-            --seeded-from "${{ inputs.raw_release_tag }}" \
+            --dataset-date "$DATASET_DATE" \
+            --download-date "$DOWNLOAD_DATE" \
+            --seeded-from "$SEEDED_FROM" \
             --mirror-dir work/mirror \
             work/mirror/*.index.json
 

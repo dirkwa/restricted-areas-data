@@ -44,7 +44,9 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 2) {
     const k = argv[i]
     if (!k.startsWith('--')) throw new Error(`Unexpected argument: ${k}`)
-    out[k.slice(2)] = argv[i + 1]
+    const v = argv[i + 1]
+    if (v === undefined || v.startsWith('--')) throw new Error(`missing value for ${k}`)
+    out[k.slice(2)] = v
   }
   return out
 }
@@ -134,6 +136,10 @@ async function run() {
   const work = args.work
   const dryRun = args['dry-run'] === 'true'
   const mirrorDir = join(work, 'mirror')
+
+  // Start from a clean workspace: stale shards from an earlier (local or
+  // re-run) invocation would be read during the rewrite and re-uploaded.
+  fs.rmSync(work, { recursive: true, force: true })
 
   await downloadAssets(tag, mirrorDir, ['mirror-index.json', 'mirror-state.json'])
   const index = JSON.parse(fs.readFileSync(join(mirrorDir, 'mirror-index.json'), 'utf8'))
