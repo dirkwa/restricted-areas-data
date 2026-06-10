@@ -1,0 +1,79 @@
+name: sync
+
+# Weekly automated dataset refresh, following the upstream-recommended
+# synchronization pattern (Navigator API docs, conventions/data-synchronization):
+# sweep the public catalog index, diff against our mirror, refresh only changed
+# sites, then rebuild + publish the regional extracts when anything moved.
+# Quiet weeks cost ~55 paced API requests and publish nothing.
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Sweep + diff only; never rewrites or publishes'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: data-publish
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      dataset_date: ${{ steps.sync.outputs.dataset_date }}
+      version_tag: ${{ steps.sync.outputs.version_tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Sync mirror against the Navigator API
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          out="$(node bin/sync-mirror.mjs --dry-run "${{ inputs.dry_run || 'false' }}")"
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create sync-failure --description "Automated dataset sync failed" --color D93F0B 2>/dev/null || true
+          title="Automated dataset sync failed"
+          body="The weekly mirror sync failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          The published data keeps serving the last good release; no action reaches users until this is fixed. Check the run log — common causes are an API anomaly tripping the sanity guard (refusing a half-empty catalog or mass removals) or a missing/garbled draft mirror release (re-seed via seed-mirror.yml)."
+          existing=$(gh issue list --label sync-failure --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body" --label sync-failure
+          fi
+
+  publish:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true' && !inputs.dry_run
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: write
+    with:
+      source: mirror
+      dataset_date: ${{ needs.sync.outputs.dataset_date }}
+      version_tag: ${{ needs.sync.outputs.version_tag }}
+      publish: true
