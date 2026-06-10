@@ -1,7 +1,23 @@
 {
   "type": "FeatureCollection",
-  "_comment": "Coarse ocean-basin tiling for routing normalized features into per-region FlatGeobuf extracts. A feature is assigned by testing its bbox-centroid against these polygons in array order; first containing polygon wins (ties broken by order). Regions deliberately overlap at edges; order resolves the overlap. Slugs match the plugin config region enum. sw-pacific is authored as two polygons so it is antimeridian-safe: Fiji (lon ~+179 and ~-179) lands in sw-pacific from either side. Bboxes are coarse coastal-cruising envelopes, not legal boundaries.",
+  "_comment": "Coarse ocean-basin tiling for routing normalized features into per-region FlatGeobuf extracts. A feature is assigned by testing its bbox-centroid against these polygons in array order; first containing polygon wins (ties broken by order). The tiling covers the full populated globe (designed from the real centroid distribution) so essentially no feature falls to the 'other' bucket. Regions deliberately overlap at a few edges; ARRAY ORDER resolves every overlap to the geographically-correct region, so each centroid still lands in exactly one region. Intended order-resolved overlaps: (1) southern-ocean is FIRST, so any centroid below lat -50 is captured there and every basin floors cleanly at -50; (2) mediterranean precedes the Atlantic/Indian basins, so the enclosed Med (incl. Aegean/Black Sea) wins over ne-atlantic/indian-ocean along its rim; (3) caribbean precedes the Atlantic/Pacific basins, so the enclosed Caribbean wins; (4) north-europe precedes ne-atlantic, so the North Sea/Baltic/Norwegian-Sea band wins north of lat 48; (5) nw-pacific precedes sw-pacific/indian-ocean, so the East-Asia marginal seas (South China Sea, etc.) win. sw-pacific is authored as two polygons so it is antimeridian-safe: Fiji (lon ~+179 and ~-179) lands in sw-pacific from either side, and region-tag also routes antimeridian-spanning components there directly. Bboxes are coarse coastal-cruising envelopes, not legal boundaries. Slugs must match the plugin config region enum (REGION_SLUGS in signalk-restricted-areas/src/index.ts).",
   "features": [
+    {
+      "type": "Feature",
+      "properties": { "region": "southern-ocean" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-180, -90],
+            [180, -90],
+            [180, -50],
+            [-180, -50],
+            [-180, -90]
+          ]
+        ]
+      }
+    },
     {
       "type": "Feature",
       "properties": { "region": "mediterranean" },
@@ -30,6 +46,38 @@
             [-55, 30],
             [-100, 30],
             [-100, 5]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "north-europe" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-15, 48],
+            [100, 48],
+            [100, 90],
+            [-15, 90],
+            [-15, 48]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "nw-pacific" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [100, -10],
+            [180, -10],
+            [180, 90],
+            [100, 90],
+            [100, -10]
           ]
         ]
       }
@@ -70,8 +118,8 @@
           [
             [-180, 10],
             [-100, 10],
-            [-100, 70],
-            [-180, 70],
+            [-100, 90],
+            [-180, 90],
             [-180, 10]
           ]
         ]
@@ -84,11 +132,27 @@
         "type": "Polygon",
         "coordinates": [
           [
-            [-120, -60],
-            [-60, -60],
+            [-120, -50],
+            [-60, -50],
             [-60, 10],
             [-120, 10],
-            [-120, -60]
+            [-120, -50]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "region": "south-atlantic" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-70, -50],
+            [20, -50],
+            [20, 10],
+            [-70, 10],
+            [-70, -50]
           ]
         ]
       }
@@ -102,8 +166,8 @@
           [
             [-100, 10],
             [-30, 10],
-            [-30, 70],
-            [-100, 70],
+            [-30, 90],
+            [-100, 90],
             [-100, 10]
           ]
         ]
@@ -117,9 +181,9 @@
         "coordinates": [
           [
             [-30, 10],
-            [10, 10],
-            [10, 70],
-            [-30, 70],
+            [15, 10],
+            [15, 90],
+            [-30, 90],
             [-30, 10]
           ]
         ]
@@ -132,11 +196,11 @@
         "type": "Polygon",
         "coordinates": [
           [
-            [20, -60],
-            [120, -60],
-            [120, 30],
-            [20, 30],
-            [20, -60]
+            [20, -50],
+            [120, -50],
+            [120, 48],
+            [20, 48],
+            [20, -50]
           ]
         ]
       }

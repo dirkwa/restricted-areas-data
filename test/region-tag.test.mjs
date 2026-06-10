@@ -47,9 +47,29 @@ describe('regionFor', () => {
     expect(regionFor(squareAt(70, -10), REGIONS)).toBe('indian-ocean')
   })
 
-  it('routes a centroid matching no region to other', () => {
-    // Mid South Atlantic: outside every authored basin envelope.
-    expect(regionFor(squareAt(-20, -40), REGIONS)).toBe('other')
+  it('tags a Japan feature as nw-pacific (East Asia coverage)', () => {
+    expect(regionFor(squareAt(140, 35), REGIONS)).toBe('nw-pacific')
+  })
+
+  it('tags a North Sea feature as north-europe, not ne-atlantic', () => {
+    expect(regionFor(squareAt(3, 55), REGIONS)).toBe('north-europe')
+  })
+
+  it('tags a deep Southern Ocean feature as southern-ocean', () => {
+    // Below lat -50: southern-ocean is authored first so it wins over every basin.
+    expect(regionFor(squareAt(-20, -55), REGIONS)).toBe('southern-ocean')
+  })
+
+  it('routes a feature with no usable centroid to other', () => {
+    // The tiling now covers the populated globe, so no real centroid lands in
+    // `other`; this exercises the fallback path with a degenerate geometry whose
+    // envelope (and centroid) is non-finite and therefore matches no polygon.
+    const empty = {
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Polygon', coordinates: [] }
+    }
+    expect(regionFor(empty, REGIONS)).toBe('other')
   })
 
   it('routes an antimeridian-spanning component to sw-pacific regardless of centroid', () => {

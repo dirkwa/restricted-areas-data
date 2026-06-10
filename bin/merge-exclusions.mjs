@@ -1,23 +1,40 @@
 #!/usr/bin/env node
 /**
  * merge-exclusions: sum the per-partition exclusions.json tallies emitted by
- * normalize into one object for the manifest. Each input is a flat
- * { reason: count } map; reasons are summed across partitions. Prints the
- * merged object to stdout.
+ * normalize into one object for the manifest. Each input is NESTED, not flat:
+ *   { partition, drops: { categoryId, areaWithoutHardBan, partition },
+ *     counts: { featuresIn, kept, componentsFull, componentsDisplay } }
+ * so we deep-sum the numeric sub-keys of drops/counts (a flat top-level sum
+ * would concatenate the partition string and stringify the nested objects),
+ * and collect the partition names into a list. Prints the merged object to
+ * stdout.
  */
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+// Add only finite numbers; ignore strings/objects/missing keys so a
+// whole-partition-excluded file (which may carry a subset of keys or extra
+// flags like excludedPartition) sums whatever numeric tallies it does have.
+function addNumeric(target, source) {
+  if (!source || typeof source !== 'object') return
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    target[key] = (target[key] ?? 0) + value
+  }
+}
+
 function mergeExclusions(paths) {
-  const total = {}
+  const drops = {}
+  const counts = {}
+  const partitions = []
   for (const path of paths) {
     const part = JSON.parse(readFileSync(path, 'utf8'))
-    for (const [reason, count] of Object.entries(part)) {
-      total[reason] = (total[reason] ?? 0) + count
-    }
+    addNumeric(drops, part.drops)
+    addNumeric(counts, part.counts)
+    if (typeof part.partition === 'string') partitions.push(part.partition)
   }
-  return total
+  return { drops, counts, partitions }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

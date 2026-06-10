@@ -21,16 +21,30 @@ function scratch() {
 }
 
 describe('mergeExclusions', () => {
-  it('sums per-reason counts across partition tallies', () => {
+  it('deep-sums the nested drops/counts across partition tallies', () => {
     const dir = scratch()
     const a = join(dir, 'a.json')
     const b = join(dir, 'b.json')
-    writeFileSync(a, JSON.stringify({ categoryId9: 200, highSeas: 704 }))
-    writeFileSync(b, JSON.stringify({ categoryId9: 338, oversizeNoHardBan: 612 }))
+    writeFileSync(
+      a,
+      JSON.stringify({
+        partition: 'A',
+        drops: { categoryId: 200, areaWithoutHardBan: 10, partition: 0 },
+        counts: { featuresIn: 300, kept: 290, componentsFull: 400, componentsDisplay: 400 }
+      })
+    )
+    writeFileSync(
+      b,
+      JSON.stringify({
+        partition: 'B',
+        drops: { categoryId: 338, areaWithoutHardBan: 5, partition: 0 },
+        counts: { featuresIn: 700, kept: 695, componentsFull: 800, componentsDisplay: 800 }
+      })
+    )
     expect(mergeExclusions([a, b])).toEqual({
-      categoryId9: 538,
-      highSeas: 704,
-      oversizeNoHardBan: 612
+      drops: { categoryId: 538, areaWithoutHardBan: 15, partition: 0 },
+      counts: { featuresIn: 1000, kept: 985, componentsFull: 1200, componentsDisplay: 1200 },
+      partitions: ['A', 'B']
     })
   })
 })
