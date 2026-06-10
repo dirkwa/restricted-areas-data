@@ -76,14 +76,19 @@ sites kept → 166,213 components.
 
 [regions/regions.geojson](regions/regions.geojson) defines 12 ocean-basin regions; a vessel
 loads only the basin(s) it sails. **LFP is a per-zone filter attribute, not a region axis** —
-the LFP partitioning of the raw download is just packaging. The slugs (the array ORDER is the
-overlap-resolution contract — first containing region wins — so don't reorder casually):
+the LFP partitioning of the raw download is just packaging. The full globe is covered (validated:
+0 features fall to `other`). The `sw-pacific` region is a MultiPolygon so it is antimeridian-safe
+(Fiji at E179/W179 lands in one region); `region-tag.mjs` resolves antimeridian-spanning centroids
+there.
+
+**The feature ORDER in `regions.geojson` is the overlap-resolution contract** — `region-tag.mjs`
+assigns each zone to the first region that contains it, so don't reorder casually:
 `southern-ocean, mediterranean, caribbean, north-europe, nw-pacific, sw-pacific, ne-pacific,
-se-pacific, south-atlantic, nw-atlantic, ne-atlantic, indian-ocean`. The full globe is covered
-(validated: 0 features fall to `other`). The `sw-pacific` region is a MultiPolygon so it is
-antimeridian-safe (Fiji at E179/W179 lands in one region); `region-tag.mjs` resolves
-antimeridian-spanning centroids there. **This slug list is a cross-repo contract** — it must match
-`REGION_SLUGS` in the plugin's `src/index.ts`.
+se-pacific, south-atlantic, nw-atlantic, ne-atlantic, indian-ocean`.
+
+The **set of slugs** (not their order) is a cross-repo contract — it must match `REGION_SLUGS` in
+the plugin's `src/index.ts`. The plugin's array order is only the config-dropdown order and does
+not affect tagging.
 
 ## File layout
 
