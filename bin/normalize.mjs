@@ -28,6 +28,7 @@ import streamJson from 'stream-json'
 import Pick from 'stream-json/filters/Pick.js'
 import StreamArray from 'stream-json/streamers/StreamArray.js'
 import bbox from '@turf/bbox'
+import simplify from '@turf/simplify'
 import { normalizeProps, categoryIdOf } from './lib/decode.mjs'
 
 // stream-json is CommonJS; its default export carries the factory functions.
@@ -35,9 +36,12 @@ const { parser } = streamJson
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-const EXCLUDE = JSON.parse(fs.readFileSync(join(__dirname, '..', 'mapping.json'), 'utf8')).exclude
+const ROOT = join(__dirname, '..')
+const EXCLUDE = JSON.parse(fs.readFileSync(join(ROOT, 'mapping.json'), 'utf8')).exclude
+const SIMPLIFY = JSON.parse(fs.readFileSync(join(ROOT, 'pipeline.config.json'), 'utf8')).simplify
 
-const DISPLAY_DECIMALS = 5
+const DISPLAY_DECIMALS = SIMPLIFY.displayPrecision
+const DISPLAY_TOLERANCE_DEG = SIMPLIFY.displayToleranceDeg
 
 // FlatGeobuf columns must be scalar — it has no list/struct field type. These
 // normalized fields are objects/arrays, so we serialize them to JSON strings on
@@ -140,6 +144,23 @@ function roundPolygon(geometry, decimals) {
 }
 
 /**
+ * Display geometry: topology-preserving Douglas-Peucker simplify (so dense reef
+ * outlines drop from ~thousands of vertices to a chart-appropriate few hundred),
+ * then round coordinates. The full variant keeps every vertex for accurate
+ * geofence point-in-polygon; this lighter copy is what chart clients render.
+ * @turf/simplify mutates its input, so deep-clone first.
+ */
+function simplifyForDisplay(geometry) {
+  const feature = { type: 'Feature', properties: {}, geometry: structuredClone(geometry) }
+  const simplified = simplify(feature, {
+    tolerance: DISPLAY_TOLERANCE_DEG,
+    highQuality: false,
+    mutate: true
+  })
+  return roundPolygon(simplified.geometry, DISPLAY_DECIMALS)
+}
+
+/**
  * Normalize one raw feature into zero-or-more output records (one per component).
  * Returns { drop } when excluded, or { full: [...], display: [...] } when kept.
  */
@@ -161,7 +182,7 @@ function processFeature(feature) {
     display.push({
       type: 'Feature',
       properties,
-      geometry: roundPolygon(component, DISPLAY_DECIMALS),
+      geometry: simplifyForDisplay(component),
       _meta: meta
     })
   })
@@ -243,6 +264,7 @@ export {
   dropReason,
   components,
   roundPolygon,
+  simplifyForDisplay,
   marineAreaKm2,
   flattenForFgb,
   FGB_JSON_FIELDS

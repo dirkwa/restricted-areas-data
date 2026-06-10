@@ -16,6 +16,7 @@ import {
   processFeature,
   components,
   roundPolygon,
+  simplifyForDisplay,
   marineAreaKm2,
   flattenForFgb,
   FGB_JSON_FIELDS
@@ -292,6 +293,48 @@ describe('geometry explosion and display rounding', () => {
     const rounded = roundPolygon(poly, 5)
     const ring = rounded.coordinates[0]
     expect(ring[0]).toEqual(ring[ring.length - 1])
+  })
+
+  it('simplifyForDisplay drastically reduces dense rings but keeps them closed', () => {
+    // A 1000-point circle — full geofence geometry would keep all of these.
+    const ring = []
+    for (let i = 0; i <= 1000; i++) {
+      const a = (2 * Math.PI * i) / 1000
+      ring.push([164.4 + 0.1 * Math.cos(a), -18.5 + 0.1 * Math.sin(a)])
+    }
+    const display = simplifyForDisplay({ type: 'Polygon', coordinates: [ring] })
+    const out = display.coordinates[0]
+    expect(out.length).toBeLessThan(100) // 1001 -> tens of vertices
+    expect(out[0]).toEqual(out[out.length - 1]) // still a closed ring
+  })
+
+  it('simplifyForDisplay does not collapse a small valid polygon below a ring', () => {
+    const tiny = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [0, 0],
+          [0.001, 0],
+          [0.001, 0.001],
+          [0, 0.001],
+          [0, 0]
+        ]
+      ]
+    }
+    const out = simplifyForDisplay(tiny).coordinates[0]
+    expect(out.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('simplifyForDisplay does not mutate the input geometry (full stays intact)', () => {
+    const ring = []
+    for (let i = 0; i <= 200; i++) {
+      const a = (2 * Math.PI * i) / 200
+      ring.push([10 + Math.cos(a), 10 + Math.sin(a)])
+    }
+    const full = { type: 'Polygon', coordinates: [ring] }
+    const before = full.coordinates[0].length
+    simplifyForDisplay(full)
+    expect(full.coordinates[0].length).toBe(before) // input untouched
   })
 })
 
