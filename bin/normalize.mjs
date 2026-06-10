@@ -40,11 +40,15 @@ const EXCLUDE = JSON.parse(fs.readFileSync(join(__dirname, '..', 'mapping.json')
 const DISPLAY_DECIMALS = 5
 
 function parseArgs(argv) {
+  if (argv.length % 2 !== 0) throw new Error('arguments must be --key value pairs')
   const out = {}
   for (let i = 0; i < argv.length; i += 2) {
     const k = argv[i]
     if (!k.startsWith('--')) throw new Error(`Unexpected argument: ${k}`)
     out[k.slice(2)] = argv[i + 1]
+  }
+  for (const required of ['partition', 'out-full', 'out-display', 'exclusions']) {
+    if (!out[required]) throw new Error(`missing required --${required}`)
   }
   return out
 }

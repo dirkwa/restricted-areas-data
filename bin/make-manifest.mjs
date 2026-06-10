@@ -15,7 +15,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readFileSync, statSync } from 'node:fs'
+import { createReadStream, readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const LICENSE = 'CC BY 4.0'
@@ -44,8 +44,17 @@ function attributionBlock(opts = {}) {
   return `Data: ProtectedSeas Navigator (CC BY 4.0). ${citations(opts).join(' ')} ${DISCLAIMER}`
 }
 
+/** Stream the file through the hash — regional FGBs can approach 2 GB, so never buffer the whole file. */
 function sha256(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex')
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256')
+    const stream = createReadStream(path)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('end', () => {
+      resolve(hash.digest('hex'))
+    })
+    stream.on('error', reject)
+  })
 }
 
 function parseArgs(argv) {
@@ -76,20 +85,24 @@ function parseArgs(argv) {
  * filtered-feature tally emitted by normalize/region-tag, carried through so the
  * manifest documents what was removed and why.
  */
-function buildManifest(args) {
+async function buildManifest(args) {
   const index = JSON.parse(readFileSync(args.index, 'utf8'))
   const opts = { visited: args.datasetDate, downloaded: args.downloadDate }
 
-  const regions = index.regions.map((r) => ({
-    region: r.region,
-    assets: r.assets.map((asset) => ({
-      name: asset.name,
-      size: statSync(asset.path).size,
-      sha256: sha256(asset.path),
-      bbox: asset.bbox,
-      featureCount: asset.featureCount
+  const regions = await Promise.all(
+    index.regions.map(async (r) => ({
+      region: r.region,
+      assets: await Promise.all(
+        r.assets.map(async (asset) => ({
+          name: asset.name,
+          size: statSync(asset.path).size,
+          sha256: await sha256(asset.path),
+          bbox: asset.bbox,
+          featureCount: asset.featureCount
+        }))
+      )
     }))
-  }))
+  )
 
   return {
     version: args.version,
@@ -105,11 +118,16 @@ function buildManifest(args) {
   }
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2))
-  process.stdout.write(JSON.stringify(buildManifest(args), null, 2) + '\n')
+  process.stdout.write(JSON.stringify(await buildManifest(args), null, 2) + '\n')
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) main()
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    process.stderr.write(`${err.message}\n`)
+    process.exit(1)
+  })
+}
 
 export { buildManifest, citations, attributionBlock, sha256 }

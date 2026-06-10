@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       raw_release_tag:
-        description: 'Staging release tag holding the raw Navigator zip asset'
+        description: 'Staging release tag holding the raw Navigator zip asset (named navigator-raw.zip)'
         required: true
       dataset_date:
         description: 'Navigator dataset date (ISO, from the data-request page)'
@@ -41,10 +41,13 @@ jobs:
 
       - run: npm ci
 
+      - name: Verify (lint + test)
+        run: npm run build:all
+
       - name: Download staged raw zip
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download "${{ inputs.raw_release_tag }}" --pattern '*.zip' --output "$RAW_ZIP"
+        run: gh release download "${{ inputs.raw_release_tag }}" --pattern "$RAW_ZIP" --output "$RAW_ZIP" --clobber
 
       - name: Normalize + region-tag
         run: |
@@ -86,7 +89,8 @@ jobs:
       matrix:
         region: ${{ fromJSON(needs.prepare.outputs.regions) }}
     container:
-      image: ghcr.io/osgeo/gdal:ubuntu-small-latest
+      # Pinned for reproducible builds; bump deliberately.
+      image: ghcr.io/osgeo/gdal:ubuntu-small-3.9.3
     steps:
       - uses: actions/checkout@v4
 
@@ -94,6 +98,12 @@ jobs:
         with:
           name: ndjson
           path: work
+
+      - name: Install Node.js (not present in the GDAL image)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends nodejs
+          node --version
 
       - name: NDJSON -> FlatGeobuf (full + display)
         env:
@@ -185,6 +195,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Recreate the release if the tag was already published (manual re-run / recovery).
+          if gh release view "${{ inputs.version_tag }}" >/dev/null 2>&1; then
+            gh release delete "${{ inputs.version_tag }}" --yes --cleanup-tag
+          fi
           gh release create "${{ inputs.version_tag }}" \
             --title "${{ inputs.version_tag }}" \
             --notes "ProtectedSeas Navigator regional FlatGeobuf extracts. Dataset ${{ inputs.dataset_date }}. CC BY 4.0 — see LICENSE-DATA.md." \

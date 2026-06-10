@@ -28,7 +28,11 @@ jobs:
         id: compare
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node bin/check-upstream.mjs >> "$GITHUB_OUTPUT"
+        run: |
+          # Capture first so a non-zero exit fails the step instead of being
+          # swallowed by the redirect into a half-written GITHUB_OUTPUT.
+          out="$(node bin/check-upstream.mjs)"
+          printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
 
       - name: Open or update tracking issue
         if: steps.compare.outputs.newer == 'true'

@@ -48,9 +48,9 @@ function fixture() {
 }
 
 describe('buildManifest', () => {
-  it('hashes and sizes each asset and carries bbox + featureCount through', () => {
+  it('hashes and sizes each asset and carries bbox + featureCount through', async () => {
     const f = fixture()
-    const m = buildManifest({
+    const m = await buildManifest({
       index: f.indexPath,
       version: 'v2026.05',
       datasetDate: '2026-05-28',
@@ -63,9 +63,9 @@ describe('buildManifest', () => {
     expect(asset.featureCount).toBe(1234)
   })
 
-  it('emits CC BY 4.0, three citations, and the locked disclaimer', () => {
+  it('emits CC BY 4.0, three citations, and the locked disclaimer', async () => {
     const f = fixture()
-    const m = buildManifest({
+    const m = await buildManifest({
       index: f.indexPath,
       version: 'v2026.05',
       datasetDate: '2026-05-28',
@@ -79,9 +79,9 @@ describe('buildManifest', () => {
     expect(m.attribution).toContain('ProtectedSeas Navigator (CC BY 4.0)')
   })
 
-  it('threads the dataset/download dates into the citation parentheticals', () => {
+  it('threads the dataset/download dates into the citation parentheticals', async () => {
     const f = fixture()
-    const m = buildManifest({
+    const m = await buildManifest({
       index: f.indexPath,
       version: 'v2026.05',
       datasetDate: '2026-05-28',
@@ -91,9 +91,9 @@ describe('buildManifest', () => {
     expect(m.citations[2]).toContain('(downloaded 2026-06-01)')
   })
 
-  it('passes the exclusion tallies through unchanged', () => {
+  it('passes the exclusion tallies through unchanged', async () => {
     const f = fixture()
-    const m = buildManifest({
+    const m = await buildManifest({
       index: f.indexPath,
       version: 'v2026.05',
       datasetDate: '2026-05-28',

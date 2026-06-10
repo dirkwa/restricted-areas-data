@@ -16,8 +16,12 @@ repository is licensed separately (Apache-2.0, see `LICENSE`).
 > Conservation Regulations, ProtectedSeas®, https://map.navigatormap.org. Navigator
 > Data Download, ProtectedSeas®. https://navigatormap.org/data-request.
 
-The `(last visited <date>)` and `(downloaded <date>)` parentheticals are filled
-from the release manifest's `datasetDate` and `downloadDate` at publish time.
+This file is a static template. The machine-readable `attribution` string in the
+release `manifest.json` (built by `bin/make-manifest.mjs`) is where the
+`(last visited <date>)` / `(downloaded <date>)` parentheticals are filled from
+the manifest's `datasetDate` and `downloadDate`; the `<datasetDate>` /
+`<downloadDate>` placeholders in the Citations section below mark the same
+substitution for human readers.
 
 ## Citations
 
