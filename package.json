@@ -10,7 +10,13 @@
     "test": "vitest run",
     "build:all": "npm run lint && npm run test"
   },
-  "keywords": ["protectedseas", "navigator", "marine", "flatgeobuf", "signalk"],
+  "keywords": [
+    "protectedseas",
+    "navigator",
+    "marine",
+    "flatgeobuf",
+    "signalk"
+  ],
   "author": "Dirk Wahrheit",
   "license": "Apache-2.0",
   "engines": {
@@ -19,15 +25,14 @@
   "dependencies": {
     "@turf/bbox": "^7.1.0",
     "@turf/simplify": "^7.1.0",
-    "flatgeobuf": "^3.36.0",
     "stream-json": "^1.8.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.17.0",
-    "eslint": "^9.17.0",
-    "eslint-config-prettier": "^9.1.0",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.1",
+    "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.2.1",
     "prettier": "^3.4.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.8"
   }
 }
