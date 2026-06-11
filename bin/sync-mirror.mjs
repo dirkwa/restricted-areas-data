@@ -157,8 +157,14 @@ async function run() {
     `diff: +${diff.added.length} added, ~${diff.changed.length} changed, -${diff.removed.length} removed`
   )
 
-  const datasetDate = maxLastUpdate(api) ?? state.datasetDate
+  // The dataset date of an API-synced release is the sync date: after a
+  // successful sweep + refresh the mirror reflects upstream as of today.
+  // maxLastUpdate is only a sanity signal — it can sit BEHIND the bulk
+  // extract's date (observed: 2026-04-16 vs extract 2026-05-28), so deriving
+  // the date from it would walk the user-visible dataset date backwards.
   const nothingMoved = diff.added.length + diff.changed.length + diff.removed.length === 0
+  const datasetDate = nothingMoved ? state.datasetDate : isoToday()
+  log(`newest upstream last_update: ${maxLastUpdate(api) ?? 'unknown'}`)
   if (nothingMoved || dryRun) {
     printOutputs({
       changed: !nothingMoved,
