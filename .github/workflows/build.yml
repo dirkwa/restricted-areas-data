@@ -159,11 +159,14 @@ jobs:
           name: ndjson
           path: work
 
-      - name: Install Node.js (not present in the GDAL image)
+      - name: Install Node.js + production deps (not present in the GDAL image)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends nodejs
+          apt-get install -y --no-install-recommends nodejs npm
           node --version
+          # region-meta.mjs imports @turf/bbox; dev deps (eslint/vitest) are
+          # not needed in the conversion matrix.
+          npm ci --omit=dev
 
       - name: NDJSON -> FlatGeobuf (full + display)
         env:
