@@ -76,7 +76,10 @@ publish      build-index + make-manifest.mjs → manifest.json + LICENSE-DATA.md
   the mirror or publishing a gutted release.
 - Boundaries from MarViva/WDPA/CBD CHM sources are withheld by the API: changed sites
   keep their previously mirrored geometry; NEW sites without geometry wait in
-  mirror-state.geometryUnavailable and are retried every sync.
+  mirror-state.geometryUnavailable as `{SITE_ID: {v: [major, minor]}}` and are re-fetched
+  ONLY when their catalog version moves past the recorded one (the live system carries
+  ~1,600 such sites — most of the API catalog's surplus over the bulk download — and
+  re-fetching them weekly would cost ~70 min of paced requests for nothing).
 - Excluded partitions (HighSeas) are not mirrored at all — re-seed from a fresh bulk
   download if mapping.json's partition exclusion is ever unlocked. The API catalog has no
   partition concept, so the sync mirrors that exclusion by country: sweep entries with
