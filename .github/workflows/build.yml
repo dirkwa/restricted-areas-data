@@ -280,3 +280,30 @@ jobs:
             --title "${{ inputs.version_tag }}" \
             --notes "ProtectedSeas Navigator regional FlatGeobuf extracts. Dataset $dataset_date. CC BY 4.0 — see LICENSE-DATA.md." \
             dist/*.fgb dist/manifest.json dist/LICENSE-DATA.md
+
+      - name: Prune old data releases (keep newest 3)
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_TAG: ${{ inputs.version_tag }}
+          KEEP: '3'
+        run: |
+          # Each data release is ~2.7 GB and boats only read releases/latest;
+          # keep a small rollback cushion instead of accumulating forever.
+          # Only published releases whose tag matches the data scheme are
+          # candidates — the draft mirror release and anything else are never
+          # touched. The just-published tag is guarded explicitly.
+          # --paginate emits one array per page; --slurp wraps them in an
+          # outer array, and .[][] flattens so keep-N applies globally.
+          gh api "repos/${{ github.repository }}/releases" --paginate --slurp \
+            | jq -r --argjson keep "$KEEP" '
+                [ .[][]
+                  | select(.draft | not)
+                  | select(.tag_name | test("^v[0-9]{4}\\.[0-9]{2}(\\.[0-9]{2})?$")) ]
+                | sort_by(.created_at) | reverse | .[$keep:] | .[].tag_name' \
+            | while read -r tag; do
+                if [ -n "$tag" ] && [ "$tag" != "$CURRENT_TAG" ]; then
+                  echo "pruning $tag"
+                  gh release delete "$tag" --yes --cleanup-tag
+                fi
+              done
