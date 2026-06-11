@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # The workflows pin actions to commit SHAs; Dependabot bumps the SHA and the
+  # version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      # Turf parses real-world geometry edge cases; keep its bumps separate so
+      # a behavior change (like the 7.3.x strict cleanCoords) is reviewable on
+      # its own.
+      turf:
+        patterns: ['@turf/*']
+      npm-deps:
+        exclude-patterns: ['@turf/*']
