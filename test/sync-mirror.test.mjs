@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rewriteAction } from '../bin/sync-mirror.mjs'
+import { rewriteAction, normalizeGeometryUnavailable, partitionAdded } from '../bin/sync-mirror.mjs'
 
 const feature = (id, geometry = { type: 'Polygon', coordinates: [[[0, 0]]] }) => ({
   type: 'Feature',
@@ -59,5 +59,32 @@ describe('rewriteAction (one mirror line during a sync rewrite)', () => {
       new Set()
     )
     expect(res).toEqual({ action: 'keep' })
+  })
+})
+
+describe('withheld-boundary bookkeeping (geometryUnavailable)', () => {
+  const api = new Map([
+    ['A', { v: [1, 0], u: null }],
+    ['B', { v: [2, 1], u: null }],
+    ['GONE', { v: [1, 0], u: null }]
+  ])
+
+  it('migrates a legacy id array by adopting the current sweep versions', () => {
+    const out = normalizeGeometryUnavailable(['A', 'B', 'VANISHED'], api)
+    expect(out).toEqual({ A: { v: [1, 0] }, B: { v: [2, 1] } })
+  })
+
+  it('passes a versioned map through untouched and tolerates absence', () => {
+    const map = { A: { v: [1, 0] } }
+    expect(normalizeGeometryUnavailable(map, api)).toBe(map)
+    expect(normalizeGeometryUnavailable(undefined, api)).toEqual({})
+  })
+
+  it('skips version-unchanged withheld sites and fetches the rest', () => {
+    // A unchanged -> skip; B bumped since we last saw it -> retry; C unknown -> fetch
+    const unavailable = { A: { v: [1, 0] }, B: { v: [2, 0] } }
+    const { fetch, skipped } = partitionAdded(['A', 'B', 'C'], api, unavailable)
+    expect(fetch).toEqual(['B', 'C'])
+    expect(skipped).toEqual({ A: { v: [1, 0] } })
   })
 })

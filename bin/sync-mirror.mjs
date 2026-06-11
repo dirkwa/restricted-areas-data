@@ -69,6 +69,46 @@ export function rewriteAction(feature, refreshed, removed, consumed) {
   }
 }
 
+/**
+ * Sites whose boundary the API withholds (MarViva/WDPA/CBD CHM sources) wait
+ * in mirror-state.geometryUnavailable as { SITE_ID: { v: [major, minor] } }
+ * and are only re-fetched when their catalog version moves past the version
+ * recorded there — re-fetching 1,600+ known-withheld boundaries every week
+ * would burn ~70 min of paced requests for predictable "no geometry" answers.
+ * Legacy states stored a bare id array (no versions); adopt the current
+ * sweep's versions for those so a future bump still triggers a retry.
+ */
+export function normalizeGeometryUnavailable(stored, api) {
+  if (!stored) return {}
+  if (!Array.isArray(stored)) return stored
+  const out = {}
+  for (const id of stored) {
+    const entry = api.get(id)
+    if (entry) out[id] = { v: entry.v }
+  }
+  return out
+}
+
+/** Split added ids into ones worth fetching and version-unchanged withheld ones. */
+export function partitionAdded(added, api, unavailable) {
+  const fetch = []
+  const skipped = {}
+  for (const id of added) {
+    const known = unavailable[id]
+    const entry = api.get(id)
+    if (known && entry && known.v[0] === entry.v[0] && known.v[1] === entry.v[1]) {
+      skipped[id] = { v: entry.v }
+    } else {
+      fetch.push(id)
+    }
+  }
+  return { fetch, skipped }
+}
+
+function sortedByKey(obj) {
+  return Object.fromEntries(Object.entries(obj).sort(([a], [b]) => (a < b ? -1 : 1)))
+}
+
 /** Async-iterate the parsed JSON lines of a gzipped NDJSON shard. */
 async function* shardLines(path) {
   const rl = readline.createInterface({
@@ -153,8 +193,11 @@ async function run() {
 
   const diff = diffIndex(index, api)
   assertSaneSweep(mirrorSize, api.size, diff.removed.length)
+  const unavailable = normalizeGeometryUnavailable(state.geometryUnavailable, api)
+  const { fetch: addedToFetch, skipped } = partitionAdded(diff.added, api, unavailable)
   log(
-    `diff: +${diff.added.length} added, ~${diff.changed.length} changed, -${diff.removed.length} removed`
+    `diff: +${diff.added.length} added, ~${diff.changed.length} changed, -${diff.removed.length} removed` +
+      ` (${(diff.added.length - addedToFetch.length).toString()} version-unchanged withheld-boundary sites skipped)`
   )
 
   // The dataset date of an API-synced release is the sync date: after a
@@ -162,13 +205,25 @@ async function run() {
   // maxLastUpdate is only a sanity signal — it can sit BEHIND the bulk
   // extract's date (observed: 2026-04-16 vs extract 2026-05-28), so deriving
   // the date from it would walk the user-visible dataset date backwards.
-  const nothingMoved = diff.added.length + diff.changed.length + diff.removed.length === 0
+  const nothingMoved = addedToFetch.length + diff.changed.length + diff.removed.length === 0
   const datasetDate = nothingMoved ? state.datasetDate : isoToday()
   log(`newest upstream last_update: ${maxLastUpdate(api) ?? 'unknown'}`)
   if (nothingMoved || dryRun) {
+    // Quiet runs still persist a one-time migration of a legacy id-array
+    // geometryUnavailable to the versioned shape: without a stored baseline,
+    // a boundary arriving via version bump would never trigger a retry.
+    if (nothingMoved && !dryRun && Array.isArray(state.geometryUnavailable)) {
+      const statePath = join(mirrorDir, 'mirror-state.json')
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({ ...state, geometryUnavailable: sortedByKey(skipped) }, null, 2) + '\n'
+      )
+      await gh(['release', 'upload', tag, '--clobber', statePath])
+      log('migrated geometryUnavailable to versioned entries (state-only upload)')
+    }
     printOutputs({
       changed: !nothingMoved,
-      added: diff.added.length,
+      added: addedToFetch.length,
       updated: diff.changed.length,
       removed: diff.removed.length,
       dataset_date: datasetDate,
@@ -181,7 +236,7 @@ async function run() {
   await downloadAssets(tag, mirrorDir, ['*.ndjson.gz'])
   const shardNames = fs.readdirSync(mirrorDir).filter((n) => n.endsWith('.ndjson.gz'))
 
-  const toRefresh = [...diff.added, ...diff.changed]
+  const toRefresh = [...addedToFetch, ...diff.changed]
   log(`fetching ${toRefresh.length} site details (paced, ~${Math.ceil(toRefresh.length / 24)} min)`)
   const refreshed = await fetchDetails(getJson, toRefresh, (done, total) =>
     log(`  ${done}/${total}`)
@@ -206,28 +261,26 @@ async function run() {
   }
 
   // Leftover refreshed ids are new sites; without geometry they cannot be
-  // rendered or geofenced, so they wait in geometryUnavailable until a future
-  // version bump (or bulk re-seed) delivers a boundary.
-  const geometryUnavailable = new Set(state.geometryUnavailable ?? [])
+  // rendered or geofenced, so they wait in geometryUnavailable (with the
+  // catalog version we saw) until a version bump delivers a boundary.
+  // version-unchanged withheld sites that were never fetched carry over.
+  const geometryUnavailable = { ...skipped }
   for (const [id, feature] of refreshed) {
-    if (consumed.has(id)) {
-      geometryUnavailable.delete(id)
-      continue
-    }
-    if (feature.geometry === null) geometryUnavailable.add(id)
-    else {
+    if (consumed.has(id)) continue
+    if (feature.geometry === null) {
+      geometryUnavailable[id] = { v: api.get(id)?.v ?? [null, null] }
+    } else {
       await updates.write(feature)
-      geometryUnavailable.delete(id)
     }
   }
   await updates.end()
 
   // The new index is the sweep, minus high-seas sites (mirroring the HighSeas
-  // partition exclusion) and minus sites still awaiting a boundary — leaving
-  // the latter out keeps them "added" so every future sync retries them.
+  // partition exclusion) and minus sites still awaiting a boundary — those
+  // stay "added" so the version check above decides any retry.
   const newIndex = {}
   for (const [id, entry] of api) {
-    if (entry.hs || geometryUnavailable.has(id)) continue
+    if (entry.hs || geometryUnavailable[id]) continue
     newIndex[id] = { v: entry.v, u: entry.u }
   }
   const newState = {
@@ -240,7 +293,7 @@ async function run() {
       .filter((n) => n.endsWith('.ndjson.gz'))
       .sort()
       .map((name) => ({ name, bytes: fs.statSync(join(outDir, name)).size })),
-    geometryUnavailable: [...geometryUnavailable].sort()
+    geometryUnavailable: sortedByKey(geometryUnavailable)
   }
   fs.writeFileSync(join(outDir, 'mirror-index.json'), JSON.stringify(newIndex) + '\n')
   fs.writeFileSync(join(outDir, 'mirror-state.json'), JSON.stringify(newState, null, 2) + '\n')

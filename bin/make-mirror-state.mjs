@@ -70,7 +70,7 @@ async function run() {
     siteCount: Object.keys(sites).length,
     partitions,
     shards,
-    geometryUnavailable: []
+    geometryUnavailable: {}
   }
 
   fs.writeFileSync(join(args['mirror-dir'], 'mirror-index.json'), JSON.stringify(sites) + '\n')
