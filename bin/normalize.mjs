@@ -152,15 +152,28 @@ function roundPolygon(geometry, decimals) {
  * then round coordinates. The full variant keeps every vertex for accurate
  * geofence point-in-polygon; this lighter copy is what chart clients render.
  * @turf/simplify mutates its input, so deep-clone first.
+ *
+ * Degenerate components (rings that collapse below 4 points once duplicate
+ * vertices are cleaned — slivers exist in the real dataset) make turf throw;
+ * they cannot be simplified, so fall back to rounding only. The caller counts
+ * fallbacks for the exclusions report.
  */
 function simplifyForDisplay(geometry) {
   const feature = { type: 'Feature', properties: {}, geometry: structuredClone(geometry) }
-  const simplified = simplify(feature, {
-    tolerance: DISPLAY_TOLERANCE_DEG,
-    highQuality: false,
-    mutate: true
-  })
-  return roundPolygon(simplified.geometry, DISPLAY_DECIMALS)
+  try {
+    const simplified = simplify(feature, {
+      tolerance: DISPLAY_TOLERANCE_DEG,
+      highQuality: false,
+      mutate: true
+    })
+    return { geometry: roundPolygon(simplified.geometry, DISPLAY_DECIMALS), fallback: false }
+  } catch (err) {
+    // Only the known degenerate-ring errors are survivable ('invalid polygon'
+    // from simplify, 'invalid polygon, fewer than 4 points' from cleanCoords);
+    // anything else is a real bug and must fail the build.
+    if (!(err instanceof Error) || !err.message.includes('invalid polygon')) throw err
+    return { geometry: roundPolygon(geometry, DISPLAY_DECIMALS), fallback: true }
+  }
 }
 
 /**
@@ -178,18 +191,21 @@ function processFeature(feature) {
   const properties = flattenForFgb(norm)
   const full = []
   const display = []
+  let simplifyFallbacks = 0
   components(feature.geometry).forEach((component, componentIndex) => {
     const componentBbox = bbox(component)
     const meta = { componentIndex, bbox: componentBbox, region: null }
     full.push({ type: 'Feature', properties, geometry: component, _meta: meta })
+    const simplified = simplifyForDisplay(component)
+    if (simplified.fallback) simplifyFallbacks += 1
     display.push({
       type: 'Feature',
       properties,
-      geometry: simplifyForDisplay(component),
+      geometry: simplified.geometry,
       _meta: meta
     })
   })
-  return { full, display }
+  return { full, display, simplifyFallbacks }
 }
 
 function inputStream(input) {
@@ -204,7 +220,13 @@ async function run() {
   const outDisplay = fs.createWriteStream(args['out-display'])
 
   const drops = { categoryId: 0, areaWithoutHardBan: 0, bboxSpanWithoutHardBan: 0, partition: 0 }
-  const counts = { featuresIn: 0, kept: 0, componentsFull: 0, componentsDisplay: 0 }
+  const counts = {
+    featuresIn: 0,
+    kept: 0,
+    componentsFull: 0,
+    componentsDisplay: 0,
+    simplifyFallbacks: 0
+  }
 
   // Whole-partition exclusion (HighSeas): consume nothing, record the drop, exit.
   if (isExcludedPartition(partition, EXCLUDE.partitions)) {
@@ -236,6 +258,7 @@ async function run() {
       continue
     }
     counts.kept += 1
+    counts.simplifyFallbacks += result.simplifyFallbacks
     for (const f of result.full) {
       await write(outFull, f)
       counts.componentsFull += 1

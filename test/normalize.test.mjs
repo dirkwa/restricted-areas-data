@@ -303,7 +303,8 @@ describe('geometry explosion and display rounding', () => {
       ring.push([164.4 + 0.1 * Math.cos(a), -18.5 + 0.1 * Math.sin(a)])
     }
     const display = simplifyForDisplay({ type: 'Polygon', coordinates: [ring] })
-    const out = display.coordinates[0]
+    expect(display.fallback).toBe(false)
+    const out = display.geometry.coordinates[0]
     expect(out.length).toBeLessThan(100) // 1001 -> tens of vertices
     expect(out[0]).toEqual(out[out.length - 1]) // still a closed ring
   })
@@ -321,8 +322,29 @@ describe('geometry explosion and display rounding', () => {
         ]
       ]
     }
-    const out = simplifyForDisplay(tiny).coordinates[0]
+    const out = simplifyForDisplay(tiny).geometry.coordinates[0]
     expect(out.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('simplifyForDisplay falls back to rounding on degenerate slivers instead of throwing', () => {
+    // Real-dataset slivers collapse below 4 points once duplicate vertices are
+    // cleaned; @turf/simplify (via cleanCoords) throws on them. The display
+    // variant must fall back to the rounded original, never crash the build.
+    const sliver = {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [10, 20],
+          [10, 20],
+          [10.000001, 20.000001],
+          [10, 20]
+        ]
+      ]
+    }
+    const out = simplifyForDisplay(sliver)
+    expect(out.fallback).toBe(true)
+    expect(out.geometry.type).toBe('Polygon')
+    expect(out.geometry.coordinates[0].length).toBe(4)
   })
 
   it('simplifyForDisplay does not mutate the input geometry (full stays intact)', () => {
