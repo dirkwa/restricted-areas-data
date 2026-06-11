@@ -23,4 +23,5 @@ updates:
       turf:
         patterns: ['@turf/*']
       npm-deps:
+        patterns: ['*']
         exclude-patterns: ['@turf/*']

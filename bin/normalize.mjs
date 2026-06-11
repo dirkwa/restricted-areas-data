@@ -167,7 +167,11 @@ function simplifyForDisplay(geometry) {
       mutate: true
     })
     return { geometry: roundPolygon(simplified.geometry, DISPLAY_DECIMALS), fallback: false }
-  } catch {
+  } catch (err) {
+    // Only the known degenerate-ring errors are survivable ('invalid polygon'
+    // from simplify, 'invalid polygon, fewer than 4 points' from cleanCoords);
+    // anything else is a real bug and must fail the build.
+    if (!(err instanceof Error) || !err.message.includes('invalid polygon')) throw err
     return { geometry: roundPolygon(geometry, DISPLAY_DECIMALS), fallback: true }
   }
 }
