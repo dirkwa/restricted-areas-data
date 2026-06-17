@@ -6,7 +6,9 @@
  * sweep the catalog index, diff against the mirror, refresh only what moved.
  *
  *   1. download mirror-index.json (+state) from the draft `mirror` release
- *   2. sweepIndex: full SITE_ID -> version catalog (~55 paced requests)
+ *   2. sweepIndex: full SITE_ID -> version catalog (~55 paced requests) for
+ *      added/removed; changedSinceIds (changed_since=lastSweepDate) for the
+ *      same-version attribute/coding corrections the sweep can't see
  *   3. diffIndex + assertSaneSweep
  *   4. nothing moved -> print changed=false and stop (shards never downloaded)
  *   5. else: download shards, fetch /api/detail/?export_boundaries=true per
@@ -33,7 +35,7 @@ import { promisify } from 'node:util'
 
 import { API_BASE, createApiClient } from './lib/api-client.mjs'
 import { apiDetailToMirrorFeature } from './lib/api-map.mjs'
-import { sweepIndex, diffIndex, assertSaneSweep, maxLastUpdate } from './sweep.mjs'
+import { sweepIndex, changedSinceIds, diffIndex, assertSaneSweep, maxLastUpdate } from './sweep.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -195,8 +197,32 @@ async function run() {
   assertSaneSweep(mirrorSize, api.size, diff.removed.length)
   const unavailable = normalizeGeometryUnavailable(state.geometryUnavailable, api)
   const { fetch: addedToFetch, skipped } = partitionAdded(diff.added, api, unavailable)
+
+  // The catalog sweep catches added/removed and version bumps, but NOT
+  // same-version attribute/coding corrections (site versions don't move for
+  // those). The authoritative signal is changed_since; query it from the last
+  // sweep date and union the result into the change set. Only sites already in
+  // the mirror count here — brand-new ones are handled by `added`. With no
+  // baseline (first run after this shipped), skip it: diffIndex's version/date
+  // fallback covers that one run, and the next has lastSweepDate.
+  const changed = new Set(diff.changed)
+  const baseline = state.lastSweepDate
+  if (baseline) {
+    const updatedIds = await changedSinceIds(getJson, baseline)
+    let corrections = 0
+    for (const id of updatedIds) {
+      if (index[id] && !api.get(id)?.hs && !changed.has(id)) {
+        changed.add(id)
+        corrections += 1
+      }
+    }
+    log(`changed_since ${baseline}: ${updatedIds.size} reported, ${corrections} new corrections`)
+  } else {
+    log('no lastSweepDate baseline yet — relying on version/date diff this run only')
+  }
+  const changedList = [...changed]
   log(
-    `diff: +${diff.added.length} added, ~${diff.changed.length} changed, -${diff.removed.length} removed` +
+    `diff: +${diff.added.length} added, ~${changedList.length} changed, -${diff.removed.length} removed` +
       ` (${(diff.added.length - addedToFetch.length).toString()} version-unchanged withheld-boundary sites skipped)`
   )
 
@@ -205,7 +231,7 @@ async function run() {
   // maxLastUpdate is only a sanity signal — it can sit BEHIND the bulk
   // extract's date (observed: 2026-04-16 vs extract 2026-05-28), so deriving
   // the date from it would walk the user-visible dataset date backwards.
-  const nothingMoved = addedToFetch.length + diff.changed.length + diff.removed.length === 0
+  const nothingMoved = addedToFetch.length + changedList.length + diff.removed.length === 0
   const datasetDate = nothingMoved ? state.datasetDate : isoToday()
   log(`newest upstream last_update: ${maxLastUpdate(api) ?? 'unknown'}`)
   if (nothingMoved || dryRun) {
@@ -224,7 +250,7 @@ async function run() {
     printOutputs({
       changed: !nothingMoved,
       added: addedToFetch.length,
-      updated: diff.changed.length,
+      updated: changedList.length,
       removed: diff.removed.length,
       dataset_date: datasetDate,
       version_tag: `v${isoToday().replaceAll('-', '.')}`
@@ -236,7 +262,7 @@ async function run() {
   await downloadAssets(tag, mirrorDir, ['*.ndjson.gz'])
   const shardNames = fs.readdirSync(mirrorDir).filter((n) => n.endsWith('.ndjson.gz'))
 
-  const toRefresh = [...addedToFetch, ...diff.changed]
+  const toRefresh = [...addedToFetch, ...changedList]
   log(`fetching ${toRefresh.length} site details (paced, ~${Math.ceil(toRefresh.length / 24)} min)`)
   const refreshed = await fetchDetails(getJson, toRefresh, (done, total) =>
     log(`  ${done}/${total}`)
@@ -305,7 +331,7 @@ async function run() {
   printOutputs({
     changed: true,
     added: diff.added.length,
-    updated: diff.changed.length,
+    updated: changedList.length,
     removed: diff.removed.length,
     dataset_date: datasetDate,
     version_tag: `v${isoToday().replaceAll('-', '.')}`

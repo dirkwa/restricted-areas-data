@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { sweepIndex, diffIndex, assertSaneSweep, maxLastUpdate } from '../bin/sweep.mjs'
+import {
+  sweepIndex,
+  changedSinceIds,
+  diffIndex,
+  assertSaneSweep,
+  maxLastUpdate
+} from '../bin/sweep.mjs'
 import { HIGH_SEAS_COUNTRY } from '../bin/lib/partition.mjs'
 
 const site = (id, major, minor, lastUpdate) => ({
@@ -32,6 +38,45 @@ describe('sweepIndex', () => {
   it('throws instead of looping forever on broken pagination', async () => {
     const getJson = async () => ({ sites: [site('A', 1, 0)] })
     await expect(sweepIndex(getJson, { limit: 1, maxPages: 3 })).rejects.toThrow('terminate')
+  })
+})
+
+describe('changedSinceIds (the same-version-correction signal)', () => {
+  it('collects updated ids across pages, passing changed_since through', async () => {
+    const pages = [{ sites: [site('A', 1, 0), site('B', 2, 0)] }, { sites: [site('C', 1, 0)] }]
+    const urls = []
+    const getJson = async (url) => {
+      urls.push(url)
+      return pages.shift()
+    }
+    const ids = await changedSinceIds(getJson, '2026-06-11', { limit: 2 })
+    expect([...ids].sort()).toEqual(['A', 'B', 'C'])
+    expect(urls[0]).toContain('type=sites_updated')
+    expect(urls[0]).toContain('changed_since=2026-06-11')
+    expect(urls[1]).toContain('page=2')
+  })
+
+  it('excludes high-seas sites (never mirrored)', async () => {
+    const getJson = async () => ({
+      sites: [
+        { ...site('A', 1, 0), country: 'Fiji' },
+        { ...site('HS', 1, 0), country: HIGH_SEAS_COUNTRY }
+      ]
+    })
+    const ids = await changedSinceIds(getJson, '2026-06-11', { limit: 10 })
+    expect([...ids]).toEqual(['A'])
+  })
+
+  it('returns an empty set when nothing changed', async () => {
+    const ids = await changedSinceIds(async () => ({ sites: [] }), '2026-06-11')
+    expect(ids.size).toBe(0)
+  })
+
+  it('throws on non-terminating pagination', async () => {
+    const getJson = async () => ({ sites: [site('A', 1, 0)] })
+    await expect(changedSinceIds(getJson, '2026-06-11', { limit: 1, maxPages: 3 })).rejects.toThrow(
+      'terminate'
+    )
   })
 })
 
