@@ -5,13 +5,18 @@
  * sweepIndex pages through /api/search/?type=sites (no text query returns the
  * whole catalog, ~27k sites at 500/page ≈ 55 paced requests) and builds
  * { SITE_ID -> { v: [major, minor], u: last_update } }. diffIndex compares it
- * to the mirror's index and reports added / changed / removed site ids.
+ * to the mirror's index and reports added / removed site ids (and version/date
+ * changes as a fallback).
  *
- * Change detection is version-first (the API bumps site_major/minor_version on
- * every attribute or boundary change), with last_update as a belt-and-braces
- * tiebreak when both sides know it. Seed-time mirror entries have u=null (the
- * bulk download carries no last_update column), so the first sync diffs purely
- * on versions.
+ * Change detection: the catalog sweep alone is NOT sufficient. Per ProtectedSeas,
+ * site_major/minor_version increments only on regulation or boundary changes —
+ * NOT on attribute or activity-coding corrections. The reliable signal for those
+ * is last_update, which is exactly what changed_since filters on. So the
+ * authoritative "what changed" comes from changedSinceIds(getJson, date)
+ * (search?type=sites_updated&changed_since=...); the full sweep is still needed
+ * for added/removed (sites_updated never reports deletions). Version/date diffing
+ * in diffIndex is kept only as a belt-and-braces fallback for the very first run,
+ * before any lastSweepDate baseline exists.
  *
  * Self-protection: an API anomaly (truncated catalog, half-broken pagination)
  * must never cascade into mass-deleting the mirror. assertSaneSweep throws
@@ -59,6 +64,30 @@ export async function sweepIndex(getJson, { limit = 500, maxPages = 500 } = {}) 
     if (batch.length < limit) return sites
   }
   throw new Error(`sweep did not terminate within ${maxPages} pages — pagination broken?`)
+}
+
+/**
+ * Site IDs the API reports as updated on/after `changedSince` (YYYY-MM-DD), via
+ * search?type=sites_updated. This is the ONLY signal that catches same-version
+ * attribute/coding corrections (versions don't move for those). High-seas sites
+ * are excluded — they are never mirrored. Returns a Set<SITE_ID>.
+ */
+export async function changedSinceIds(getJson, changedSince, { limit = 500, maxPages = 500 } = {}) {
+  const ids = new Set()
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await getJson(
+      `${API_BASE}/search/?type=sites_updated&changed_since=${encodeURIComponent(
+        changedSince
+      )}&limit=${limit}&page=${page}`
+    )
+    const batch = res?.sites ?? []
+    for (const site of batch) {
+      const id = String(site.site_id ?? '')
+      if (id !== '' && !isHighSeasCountry(site.country)) ids.add(id)
+    }
+    if (batch.length < limit) return ids
+  }
+  throw new Error(`changed_since did not terminate within ${maxPages} pages — pagination broken?`)
 }
 
 function sameVersion(a, b) {

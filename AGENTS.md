@@ -70,10 +70,20 @@ publish      build-index + make-manifest.mjs → manifest.json + LICENSE-DATA.md
 - Rate limit: 5 requests / 10 s per IP. ALL API traffic goes through
   [bin/lib/api-client.mjs](bin/lib/api-client.mjs) (serialized, 2.5 s spacing, backoff).
   Never call the API outside it.
-- Diffing is version-first (`site_major_version`/`site_minor_version`), `last_update`
-  as tiebreak. Sanity guards in [bin/sweep.mjs](bin/sweep.mjs) refuse half-empty sweeps
-  and mass removals — never weaken them; a broken sweep must not cascade into deleting
-  the mirror or publishing a gutted release.
+- Change detection is TWO-pronged and both are load-bearing. The full catalog sweep
+  (`sweepIndex`) finds **added/removed** sites and version bumps. But per ProtectedSeas,
+  `site_major_version`/`site_minor_version` increments ONLY on regulation or boundary
+  changes — NOT on attribute or activity-coding corrections (the safety-critical case: a
+  `1`=PROHIBITED that gets fixed). Those are caught only by `changedSinceIds`
+  (`search?type=sites_updated&changed_since=<mirror-state.lastSweepDate>`), whose ids are
+  unioned into the change set. Do NOT drop the changed_since query "because the sweep
+  already lists everything" — it doesn't, for same-version corrections. The version/date
+  diff in `diffIndex` is only a first-run fallback (no baseline yet). Note ~30% of mirror
+  entries have `last_update: null` (the API genuinely returns null for them), so the
+  in-`diffIndex` date tiebreak can't be relied on — `changed_since` is the real signal.
+  Sanity guards in [bin/sweep.mjs](bin/sweep.mjs) refuse half-empty sweeps and mass
+  removals — never weaken them; a broken sweep must not cascade into deleting the mirror
+  or publishing a gutted release.
 - Boundaries from MarViva/WDPA/CBD CHM sources are withheld by the API: changed sites
   keep their previously mirrored geometry; NEW sites without geometry wait in
   mirror-state.geometryUnavailable as `{SITE_ID: {v: [major, minor]}}` and are re-fetched
