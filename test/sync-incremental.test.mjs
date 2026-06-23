@@ -224,10 +224,10 @@ describe('incremental sync — end to end', () => {
       state: baseState({ siteCount: 0, geometryUnavailable: { PARK: { v: [1, 0] } } }),
       shards: { 'updates.ndjson.gz': [] }
     })
-    let fetched = false
+    const fetched = []
     const getJson = async (url) => {
       if (url.includes('/detail/')) {
-        fetched = true
+        fetched.push(decodeURIComponent(new URL(url).searchParams.get('ps_id')))
         return detail('PARK', true) // now HAS a boundary
       }
       if (url.includes('type=sites_updated')) {
@@ -237,7 +237,7 @@ describe('incremental sync — end to end', () => {
       return { sites: [] }
     }
     await runSync({ getJson })
-    expect(fetched).toBe(true)
+    expect(fetched).toEqual(['PARK']) // exactly the parked id, nothing else
     const { index, state } = readRemote(remoteDir)
     expect(index.PARK).toBeDefined() // promoted out of geometryUnavailable
     expect(state.geometryUnavailable.PARK).toBeUndefined()
@@ -338,9 +338,11 @@ describe('census path — end to end', () => {
     const lines = []
     const sweep = []
     for (let i = 0; i < 20; i++) {
-      index[`F${i}`] = { v: [1, 0], u: '2026-06-01' }
+      // Identical version AND last_update on both sides, so diffIndex sees no
+      // change — isolating PARK as the only thing fetched this census.
+      index[`F${i}`] = { v: [1, 0], u: '2026-06-30' }
       lines.push(mirrorLine(`F${i}`))
-      sweep.push(row(`F${i}`, { v: [1, 0] }))
+      sweep.push(row(`F${i}`, { v: [1, 0], u: '2026-06-30' }))
     }
     sweep.push(row('PARK', { v: [1, 0] })) // census now lists PARK too
     seedMirror(remoteDir, {
@@ -370,7 +372,9 @@ describe('census path — end to end', () => {
       return { sites: [] }
     }
     await runSync({ getJson })
-    expect(fetched).toContain('PARK')
+    // PARK is the ONLY fetch: the F-filler is unchanged in both index and sweep,
+    // so exact equality guards against the census redundantly re-fetching it.
+    expect(fetched).toEqual(['PARK'])
     const { index: out, state } = readRemote(remoteDir)
     expect(out.PARK).toBeDefined() // promoted out of geometryUnavailable
     expect(state.geometryUnavailable.PARK).toBeUndefined()
