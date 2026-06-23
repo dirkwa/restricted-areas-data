@@ -289,6 +289,47 @@ describe('census path — end to end', () => {
     expect(state.lastSweepDate).toBe(TODAY)
   })
 
+  it('census: a changed_since-active id absent from the sweep is NOT fetched as changed', async () => {
+    // GONE was removed mid-sweep: census omits it (-> diff.removed), but the
+    // changed_since window still lists it active. It must not be folded into
+    // `changed` (which would fetch a non-existent site).
+    // Filler so the single removal stays under assertSaneSweep's 10% census cap.
+    const index = { KEEP: { v: [1, 0], u: '2026-06-01' }, GONE: { v: [1, 0], u: '2026-06-01' } }
+    const lines = [mirrorLine('KEEP'), mirrorLine('GONE')]
+    const sweep = [row('KEEP', { v: [1, 0] })]
+    for (let i = 0; i < 20; i++) {
+      index[`F${i}`] = { v: [1, 0], u: '2026-06-01' }
+      lines.push(mirrorLine(`F${i}`))
+      sweep.push(row(`F${i}`, { v: [1, 0] }))
+    }
+    seedMirror(remoteDir, {
+      index,
+      state: baseState({ siteCount: 22, lastFullCensusDate: null }), // forces census
+      shards: { 'updates.ndjson.gz': lines }
+    })
+    const fetched = []
+    const getJson = async (url) => {
+      if (url.includes('type=sites&')) {
+        const page = Number(new URL(url).searchParams.get('page'))
+        return { sites: page === 1 ? sweep : [] } // GONE absent from the sweep
+      }
+      if (url.includes('type=sites_updated')) {
+        const page = Number(new URL(url).searchParams.get('page'))
+        return { sites: page === 1 ? [row('GONE', { v: [1, 0] })] : [] } // window still lists GONE
+      }
+      if (url.includes('/detail/')) {
+        fetched.push(decodeURIComponent(new URL(url).searchParams.get('ps_id')))
+        return detail('KEEP', true)
+      }
+      return { sites: [] }
+    }
+    await runSync({ getJson })
+    expect(fetched).not.toContain('GONE')
+    const { index: out } = readRemote(remoteDir)
+    expect(out.GONE).toBeUndefined()
+    expect(out.KEEP).toBeDefined()
+  })
+
   it('--full forces a census even with a fresh baseline', async () => {
     let sweptCatalog = false
     const getJson = async (url) => {

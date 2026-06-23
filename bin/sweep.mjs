@@ -280,9 +280,12 @@ export function patchIndex(
  * quiet week legitimately returns ~0 rows) and is dropped. Only REMOVALS (the
  * destructive op) are capped — on the lower of an absolute floor and a ratio — plus
  * a total-delta tripwire that catches a changed_since parse failure replaying all
- * history. Adds/changes are non-destructive and uncapped: a large legitimate
- * safety-correction batch must never be blocked. Under-reporting (a truncated page
- * MISSING changes) is not detectable here — that is what the periodic census heals.
+ * history. Removals are the only DESTRUCTIVE op and get the dedicated cap; adds and
+ * changes are bounded only by that gross >50% tripwire (a window touching more than
+ * half the mirror is indistinguishable from a parse failure, so it fails loudly —
+ * a genuine mass recoding that large is a human decision, not an automatic sync).
+ * Under-reporting (a truncated page MISSING changes) is not detectable here — that
+ * is what the periodic census heals.
  */
 export function assertSaneDelta(
   mirrorSize,

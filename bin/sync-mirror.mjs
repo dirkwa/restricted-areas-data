@@ -259,7 +259,12 @@ export async function run(argv = process.argv.slice(2), deps = {}) {
     if (baseline) {
       const rows = await changedSinceRows(getJson, baseline)
       for (const id of rows.active.keys()) {
-        if (index[id] && !api.get(id)?.hs && !changedSet.has(id)) changedSet.add(id)
+        // Only fold in a correction the census also still lists (apiEntry truthy
+        // and non-high-seas). A changed_since-active id absent from the census
+        // was removed/reclassified mid-sweep — diffIndex already has it in
+        // `removed`; adding it to `changed` would fetch a non-existent site.
+        const apiEntry = api.get(id)
+        if (index[id] && apiEntry && !apiEntry.hs && !changedSet.has(id)) changedSet.add(id)
       }
       log(`census + changed_since ${baseline}: ${rows.active.size} active rows folded in`)
     }
