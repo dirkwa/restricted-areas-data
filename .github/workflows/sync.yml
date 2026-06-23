@@ -2,9 +2,11 @@ name: sync
 
 # Weekly automated dataset refresh, following the upstream-recommended
 # synchronization pattern (Navigator API docs, conventions/data-synchronization):
-# sweep the public catalog index, diff against our mirror, refresh only changed
-# sites, then rebuild + publish the regional extracts when anything moved.
-# Quiet weeks cost ~55 paced API requests and publish nothing.
+# pull the incremental changed_since window, patch the mirror, refresh only
+# changed sites, then rebuild + publish the regional extracts when anything moved.
+# A quiet incremental week costs ~1 API request and publishes nothing. The sync
+# auto-runs a full catalog census ~monthly (and on a stale/absent baseline) to
+# self-heal drift; force one with the `full` input below.
 on:
   schedule:
     - cron: '23 6 * * 1'
@@ -12,6 +14,10 @@ on:
     inputs:
       dry_run:
         description: 'Sweep + diff only; never rewrites or publishes'
+        type: boolean
+        default: false
+      full:
+        description: 'Force a full catalog census this run (recovery / reconcile)'
         type: boolean
         default: false
 
@@ -47,7 +53,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          out="$(node bin/sync-mirror.mjs --dry-run "${{ inputs.dry_run || 'false' }}")"
+          out="$(node bin/sync-mirror.mjs \
+            --dry-run "${{ inputs.dry_run || 'false' }}" \
+            --full "${{ inputs.full || 'false' }}")"
           printf '%s\n' "$out"
           printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
 
@@ -60,7 +68,7 @@ jobs:
           title="Automated dataset sync failed"
           body="The weekly mirror sync failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-          The published data keeps serving the last good release; no action reaches users until this is fixed. Check the run log — common causes are an API anomaly tripping the sanity guard (refusing a half-empty catalog or mass removals) or a missing/garbled draft mirror release (re-seed via seed-mirror.yml)."
+          The published data keeps serving the last good release; no action reaches users until this is fixed. Check the run log — common causes are an API anomaly tripping a sanity guard (incremental removal cap, or the census half-empty/mass-removal guard) or a missing/garbled draft mirror release (re-seed via seed-mirror.yml). To force a full reconcile (recommended after any outage), dispatch this workflow with full=true."
           existing=$(gh issue list --label sync-failure --state open --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"

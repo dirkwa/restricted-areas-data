@@ -8,19 +8,28 @@
  * to the mirror's index and reports added / removed site ids (and version/date
  * changes as a fallback).
  *
- * Change detection: the catalog sweep alone is NOT sufficient. Per ProtectedSeas,
- * site_major/minor_version increments only on regulation or boundary changes —
- * NOT on attribute or activity-coding corrections. The reliable signal for those
- * is last_update, which is exactly what changed_since filters on. So the
- * authoritative "what changed" comes from changedSinceIds(getJson, date)
- * (search?type=sites_updated&changed_since=...); the full sweep is still needed
- * for added/removed (sites_updated never reports deletions). Version/date diffing
- * in diffIndex is kept only as a belt-and-braces fallback for the very first run,
- * before any lastSweepDate baseline exists.
+ * Two paths, both retained:
  *
- * Self-protection: an API anomaly (truncated catalog, half-broken pagination)
- * must never cascade into mass-deleting the mirror. assertSaneSweep throws
- * when the sweep looks implausible relative to the mirror.
+ *  - INCREMENTAL (the weekly default): changedSinceRows pages
+ *    search?type=sites_updated&changed_since=<lastSweepDate>&include_inactive=true,
+ *    which now reports new sites and corrections as ACTIVE rows and deletions as
+ *    status:"removed" rows. deriveDelta classifies them against the carried-forward
+ *    mirror; the index is PATCHED (patchIndex), never rebuilt — sites_updated is not
+ *    a census (it only returns sites whose last_update is in the window), so the
+ *    ~28k untouched baseline must be carried forward. assertSaneDelta caps removals.
+ *
+ *  - CENSUS (monthly, or on stale/absent baseline / --full): sweepIndex pages the
+ *    whole catalog (~55 paced requests); diffIndex + assertSaneSweep as before. The
+ *    census is the only self-heal for anything the incremental stream silently
+ *    misses (truncated page, sub-cap removal drip) and the only pruner of a site
+ *    silently flipped to high-seas. site_major/minor_version moves only on
+ *    regulation/boundary changes, so the census still unions a changedSinceRows pass
+ *    to catch same-version corrections.
+ *
+ * Verified live: changed_since is inclusive (>=); sites_updated pagination is stable
+ * under sort=NAME_ASC; last_update is day-granular (no time) so a (version,date)
+ * equality skip is unsafe — every active in-mirror row is re-fetched, idempotency
+ * comes from overwrite.
  *
  * CLI (ad-hoc inspection):  node bin/sweep.mjs [--limit 500]
  */
@@ -122,6 +131,179 @@ export function diffIndex(mirror, api) {
     if (!apiEntry || apiEntry.hs) removed.push(id)
   }
   return { added, changed, removed }
+}
+
+/** A sites_updated row is a deletion only on an explicit removed status. */
+export function isRemovedRow(site) {
+  return typeof site?.status === 'string' && site.status.toLowerCase() === 'removed'
+}
+
+/**
+ * Hard gate: confirm include_inactive=true is actually honored, so a silent flag
+ * regression can never make us blind to removals or resurrect a deleted site. A
+ * non-empty window must carry a `status` field on at least one row (pre-flag
+ * responses have no status field at all). Throws otherwise.
+ */
+export function assertInactiveFlagHonored(reportedRows, sawStatusField) {
+  if (reportedRows > 0 && !sawStatusField) {
+    throw new Error(
+      'sites_updated rows carry no `status` field — include_inactive=true is not in effect ' +
+        '(removals would be invisible); refusing to sync'
+    )
+  }
+}
+
+/**
+ * Page search?type=sites_updated&changed_since=<date>&include_inactive=true and
+ * classify the window. Returns:
+ *   active         Map<id, {v,u,hs:false}>  non-high-seas active rows (mirrorable)
+ *   removed        Set<id>                  status:"removed" rows (id only; NOT
+ *                  country-filtered — a removed row for an unmirrored/high-seas id
+ *                  is a no-op downstream)
+ *   reclassifiedHs Set<id>                  ACTIVE rows that ARE high-seas (so a
+ *                  mirrored site flipped to high-seas can be pruned as removed)
+ *   reportedRows   number                   total rows seen (for the flag gate)
+ * Active-vs-removed precedence is resolved by deriveDelta (active wins), so page
+ * order is irrelevant. Pins sort=NAME_ASC (pagination verified stable under it); a
+ * row duplicated across a page boundary is idempotent into the Map/Set.
+ */
+export async function changedSinceRows(
+  getJson,
+  changedSince,
+  { limit = 500, maxPages = 500 } = {}
+) {
+  const active = new Map()
+  const removed = new Set()
+  const reclassifiedHs = new Set()
+  let reportedRows = 0
+  let sawStatusField = false
+  for (let page = 1; page <= maxPages; page++) {
+    const res = await getJson(
+      `${API_BASE}/search/?type=sites_updated&changed_since=${encodeURIComponent(changedSince)}` +
+        `&include_inactive=true&limit=${limit}&page=${page}&sort=NAME_ASC`
+    )
+    const batch = res?.sites ?? []
+    for (const site of batch) {
+      const id = String(site.site_id ?? '')
+      if (id === '') continue
+      reportedRows += 1
+      if (typeof site.status === 'string') sawStatusField = true
+      if (isRemovedRow(site)) removed.add(id)
+      else if (isHighSeasCountry(site.country)) reclassifiedHs.add(id)
+      else active.set(id, entryOf(site))
+    }
+    if (batch.length < limit) {
+      assertInactiveFlagHonored(reportedRows, sawStatusField)
+      return { active, removed, reclassifiedHs, reportedRows }
+    }
+  }
+  throw new Error(`changed_since did not terminate within ${maxPages} pages — pagination broken?`)
+}
+
+/**
+ * Classify one changedSinceRows window against the carried-forward mirror. "In the
+ * mirror" is index ∪ geometryUnavailable (parked withheld-boundary sites live in
+ * the latter, NOT in index). Returns id arrays:
+ *   added            active id in NEITHER store (a new site)
+ *   changed          active id in index — ALWAYS re-fetched (no version/date skip;
+ *                    last_update is day-granular so equality is unsafe)
+ *   forceFetchParked active id parked in geometryUnavailable — may now have a
+ *                    boundary OR be a same-version coding correction; must NOT be
+ *                    routed through partitionAdded's version-unchanged skip
+ *   removed          (removed ∪ mirrored reclassifiedHs) MINUS any id also active
+ *                    in this window (active wins, order-independent), restricted to
+ *                    ids actually present in index or geometryUnavailable
+ * A NEW (unmirrored) high-seas active row is dropped entirely (never added).
+ */
+export function deriveDelta(mirrorIndex, geometryUnavailable, { active, removed, reclassifiedHs }) {
+  const idx = mirrorIndex instanceof Map ? mirrorIndex : new Map(Object.entries(mirrorIndex))
+  const parked =
+    geometryUnavailable instanceof Map
+      ? geometryUnavailable
+      : new Map(Object.entries(geometryUnavailable ?? {}))
+  const inMirror = (id) => idx.has(id) || parked.has(id)
+
+  const added = []
+  const changed = []
+  const forceFetchParked = []
+  for (const id of active.keys()) {
+    if (idx.has(id)) changed.push(id)
+    else if (parked.has(id)) forceFetchParked.push(id)
+    else added.push(id)
+  }
+
+  const removedSet = new Set()
+  for (const id of removed) if (inMirror(id) && !active.has(id)) removedSet.add(id)
+  // An ACTIVE row reclassified to high-seas is, to the mirror, a deletion.
+  for (const id of reclassifiedHs) if (inMirror(id) && !active.has(id)) removedSet.add(id)
+
+  return { added, changed, removed: [...removedSet], forceFetchParked }
+}
+
+/**
+ * Carry the mirror forward and patch it. Returns fresh { index, geometryUnavailable }
+ * (inputs untouched). Owns BOTH stores so removals clean both and parked<->indexed
+ * transitions stay coherent.
+ *   removedIds  ids to delete from BOTH stores
+ *   refreshed   Map<id, feature> from fetchDetails (geometry maybe null)
+ *   consumed    Set<id> whose OLD shard line was updated in place (so a null-geometry
+ *               refresh kept its existing geometry -> stays indexed, not parked)
+ *   entryOfId   (id) => {v,u} | undefined  — the window's version/date source
+ */
+export function patchIndex(
+  oldIndex,
+  oldGeometryUnavailable,
+  { removedIds, refreshed, consumed, entryOfId }
+) {
+  const index = { ...oldIndex }
+  const geometryUnavailable = { ...(oldGeometryUnavailable ?? {}) }
+  for (const id of removedIds) {
+    delete index[id]
+    delete geometryUnavailable[id]
+  }
+  for (const [id, feature] of refreshed) {
+    const e = entryOfId(id)
+    const entry = { v: e?.v ?? [null, null], u: e?.u ?? null }
+    if (feature.geometry !== null || consumed.has(id)) {
+      delete geometryUnavailable[id]
+      index[id] = entry
+    } else {
+      delete index[id]
+      geometryUnavailable[id] = { v: entry.v }
+    }
+  }
+  return { index, geometryUnavailable }
+}
+
+/**
+ * Guard one incremental delta. Census-free: the half-empty check is meaningless (a
+ * quiet week legitimately returns ~0 rows) and is dropped. Only REMOVALS (the
+ * destructive op) are capped — on the lower of an absolute floor and a ratio — plus
+ * a total-delta tripwire that catches a changed_since parse failure replaying all
+ * history. Adds/changes are non-destructive and uncapped: a large legitimate
+ * safety-correction batch must never be blocked. Under-reporting (a truncated page
+ * MISSING changes) is not detectable here — that is what the periodic census heals.
+ */
+export function assertSaneDelta(
+  mirrorSize,
+  { added, changed, removed },
+  { maxRemovedAbs = 200, maxRemovedRatio = 0.02, maxDeltaRatio = 0.5 } = {}
+) {
+  if (mirrorSize <= 0) return
+  const cap = Math.min(maxRemovedAbs, Math.ceil(mirrorSize * maxRemovedRatio))
+  if (removed > cap) {
+    throw new Error(
+      `incremental window would remove ${removed} of ${mirrorSize} mirrored sites ` +
+        `(cap ${cap}) — refusing; investigate upstream first`
+    )
+  }
+  const touched = added + changed + removed
+  if (touched > Math.ceil(mirrorSize * maxDeltaRatio)) {
+    throw new Error(
+      `incremental window touches ${touched} of ${mirrorSize} sites ` +
+        `(> ${maxDeltaRatio * 100}%) — implausible for one window; refusing (changed_since parse failure?)`
+    )
+  }
 }
 
 /**

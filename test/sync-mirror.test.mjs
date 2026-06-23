@@ -1,5 +1,20 @@
 import { describe, it, expect } from 'vitest'
-import { rewriteAction, normalizeGeometryUnavailable, partitionAdded } from '../bin/sync-mirror.mjs'
+import {
+  rewriteAction,
+  normalizeGeometryUnavailable,
+  partitionAdded,
+  daysBetween
+} from '../bin/sync-mirror.mjs'
+
+describe('daysBetween', () => {
+  it('counts whole days and treats an absent baseline as Infinity', () => {
+    expect(daysBetween('2026-06-01', '2026-06-01')).toBe(0)
+    expect(daysBetween('2026-06-01', '2026-07-01')).toBe(30)
+    expect(daysBetween('2026-04-01', '2026-06-01')).toBe(61)
+    expect(daysBetween(null, '2026-06-01')).toBe(Infinity)
+    expect(daysBetween(undefined, '2026-06-01')).toBe(Infinity)
+  })
+})
 
 const feature = (id, geometry = { type: 'Polygon', coordinates: [[[0, 0]]] }) => ({
   type: 'Feature',

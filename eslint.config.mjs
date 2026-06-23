@@ -13,7 +13,9 @@ export default [
         console: 'readonly',
         Buffer: 'readonly',
         structuredClone: 'readonly',
-        AbortSignal: 'readonly'
+        AbortSignal: 'readonly',
+        URL: 'readonly',
+        performance: 'readonly'
       }
     }
   },
