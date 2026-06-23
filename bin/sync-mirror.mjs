@@ -255,23 +255,32 @@ export async function run(argv = process.argv.slice(2), deps = {}) {
     assertSaneSweep(mirrorSize, api.size, diff.removed.length)
     // The census still misses same-version corrections (versions don't move for
     // those); union a changed_since pass when a baseline exists.
+    const censusParked = normalizeGeometryUnavailable(state.geometryUnavailable, api)
+    const censusForceFetchParked = new Set()
     const changedSet = new Set(diff.changed)
     if (baseline) {
       const rows = await changedSinceRows(getJson, baseline)
       for (const id of rows.active.keys()) {
-        // Only fold in a correction the census also still lists (apiEntry truthy
-        // and non-high-seas). A changed_since-active id absent from the census
-        // was removed/reclassified mid-sweep — diffIndex already has it in
-        // `removed`; adding it to `changed` would fetch a non-existent site.
+        // Fold in only corrections the census still lists (apiEntry truthy +
+        // non-high-seas). An indexed site is a `changed`; a PARKED withheld site
+        // returned active may have gained a boundary or be a same-version coding
+        // fix, so force-fetch it (else partitionAdded could skip it). An id in
+        // neither was removed/reclassified mid-sweep — diffIndex already has it
+        // in `removed`; folding it into `changed` would fetch a non-existent site.
         const apiEntry = api.get(id)
-        if (index[id] && apiEntry && !apiEntry.hs && !changedSet.has(id)) changedSet.add(id)
+        if (!apiEntry || apiEntry.hs) continue
+        if (index[id]) changedSet.add(id)
+        else if (censusParked[id]) censusForceFetchParked.add(id)
       }
       log(`census + changed_since ${baseline}: ${rows.active.size} active rows folded in`)
     }
-    added = diff.added
+    // A parked id the census re-lists is in diff.added (sweep sees it, index
+    // doesn't); route it through forceFetchParked instead so partitionAdded's
+    // version-unchanged skip can't re-park it after we fetch its boundary.
+    added = diff.added.filter((id) => !censusForceFetchParked.has(id))
     changed = [...changedSet]
     removedList = diff.removed
-    forceFetchParked = []
+    forceFetchParked = [...censusForceFetchParked]
     versionSource = api
   } else {
     const rows = await changedSinceRows(getJson, baseline)
@@ -389,9 +398,12 @@ export async function run(argv = process.argv.slice(2), deps = {}) {
   // Carry the mirror forward and patch both stores (removals clean index AND
   // geometryUnavailable; null-geometry refresh parks unless its old line was
   // consumed). Version-unchanged withheld sites skipped this run carry over.
+  // Pass the NORMALIZED object form, never the raw state: a legacy array
+  // geometryUnavailable spread into patchIndex would produce numeric keys and
+  // corrupt the persisted parked-site bookkeeping.
   const { index: newIndex, geometryUnavailable: patchedUnavailable } = patchIndex(
     index,
-    state.geometryUnavailable,
+    unavailable,
     { removedIds: removed, refreshed, consumed, entryOfId: (id) => versionSource.get(id) }
   )
   const newGeometryUnavailable = { ...patchedUnavailable }

@@ -330,6 +330,52 @@ describe('census path — end to end', () => {
     expect(out.KEEP).toBeDefined()
   })
 
+  it('census: a parked withheld site returned active by changed_since is force-fetched', async () => {
+    // Boundary-restoration during a census arrives as a same-version correction.
+    // The parked id is NOT in the index (only in geometryUnavailable), so it must
+    // be force-fetched, not skipped as version-unchanged-withheld.
+    const index = {}
+    const lines = []
+    const sweep = []
+    for (let i = 0; i < 20; i++) {
+      index[`F${i}`] = { v: [1, 0], u: '2026-06-01' }
+      lines.push(mirrorLine(`F${i}`))
+      sweep.push(row(`F${i}`, { v: [1, 0] }))
+    }
+    sweep.push(row('PARK', { v: [1, 0] })) // census now lists PARK too
+    seedMirror(remoteDir, {
+      index,
+      state: baseState({
+        siteCount: 20,
+        lastFullCensusDate: null, // forces census
+        lastSweepDate: '2026-06-22',
+        geometryUnavailable: { PARK: { v: [1, 0] } }
+      }),
+      shards: { 'updates.ndjson.gz': lines }
+    })
+    const fetched = []
+    const getJson = async (url) => {
+      if (url.includes('type=sites&')) {
+        const page = Number(new URL(url).searchParams.get('page'))
+        return { sites: page === 1 ? sweep : [] }
+      }
+      if (url.includes('type=sites_updated')) {
+        const page = Number(new URL(url).searchParams.get('page'))
+        return { sites: page === 1 ? [row('PARK', { v: [1, 0] })] : [] }
+      }
+      if (url.includes('/detail/')) {
+        fetched.push(decodeURIComponent(new URL(url).searchParams.get('ps_id')))
+        return detail('PARK', true) // now HAS a boundary
+      }
+      return { sites: [] }
+    }
+    await runSync({ getJson })
+    expect(fetched).toContain('PARK')
+    const { index: out, state } = readRemote(remoteDir)
+    expect(out.PARK).toBeDefined() // promoted out of geometryUnavailable
+    expect(state.geometryUnavailable.PARK).toBeUndefined()
+  })
+
   it('--full forces a census even with a fresh baseline', async () => {
     let sweptCatalog = false
     const getJson = async (url) => {

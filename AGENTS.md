@@ -77,7 +77,8 @@ publish      build-index + make-manifest.mjs → manifest.json + LICENSE-DATA.md
     `deriveDelta` classifies them against the carried mirror; `patchIndex` PATCHES the
     index forward (NEVER rebuild — sites_updated is not a census, it only returns sites
     whose last_update is in the window; the ~28k untouched baseline must carry forward).
-    `assertSaneDelta` caps removals only. A quiet week ≈ 1 request.
+    `assertSaneDelta` caps removals and rejects an implausibly large touched
+    window (>50% of the mirror). A quiet week ≈ 1 request.
   - **CENSUS** (~monthly via `lastFullCensusDate`, on stale/absent baseline, or `--full`):
     `sweepIndex` + `diffIndex` + `assertSaneSweep` (the half-empty + mass-removal guards
     are MEANINGFUL here). The census is the only self-heal for anything the incremental
