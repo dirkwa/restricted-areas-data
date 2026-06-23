@@ -70,20 +70,31 @@ publish      build-index + make-manifest.mjs → manifest.json + LICENSE-DATA.md
 - Rate limit: 5 requests / 10 s per IP. ALL API traffic goes through
   [bin/lib/api-client.mjs](bin/lib/api-client.mjs) (serialized, 2.5 s spacing, backoff).
   Never call the API outside it.
-- Change detection is TWO-pronged and both are load-bearing. The full catalog sweep
-  (`sweepIndex`) finds **added/removed** sites and version bumps. But per ProtectedSeas,
-  `site_major_version`/`site_minor_version` increments ONLY on regulation or boundary
-  changes — NOT on attribute or activity-coding corrections (the safety-critical case: a
-  `1`=PROHIBITED that gets fixed). Those are caught only by `changedSinceIds`
-  (`search?type=sites_updated&changed_since=<mirror-state.lastSweepDate>`), whose ids are
-  unioned into the change set. Do NOT drop the changed_since query "because the sweep
-  already lists everything" — it doesn't, for same-version corrections. The version/date
-  diff in `diffIndex` is only a first-run fallback (no baseline yet). Note ~30% of mirror
-  entries have `last_update: null` (the API genuinely returns null for them), so the
-  in-`diffIndex` date tiebreak can't be relied on — `changed_since` is the real signal.
-  Sanity guards in [bin/sweep.mjs](bin/sweep.mjs) refuse half-empty sweeps and mass
-  removals — never weaken them; a broken sweep must not cascade into deleting the mirror
-  or publishing a gutted release.
+- Change detection has TWO paths (both in `run()` in sync-mirror.mjs), chosen per run:
+  - **INCREMENTAL** (weekly default): `changedSinceRows(lastSweepDate)` pages
+    `search?type=sites_updated&changed_since=...&include_inactive=true`, which reports new
+    sites + corrections as ACTIVE rows and deletions as `status:"removed"` rows.
+    `deriveDelta` classifies them against the carried mirror; `patchIndex` PATCHES the
+    index forward (NEVER rebuild — sites_updated is not a census, it only returns sites
+    whose last_update is in the window; the ~28k untouched baseline must carry forward).
+    `assertSaneDelta` caps removals and rejects an implausibly large touched
+    window (>50% of the mirror). A quiet week ≈ 1 request.
+  - **CENSUS** (~monthly via `lastFullCensusDate`, on stale/absent baseline, or `--full`):
+    `sweepIndex` + `diffIndex` + `assertSaneSweep` (the half-empty + mass-removal guards
+    are MEANINGFUL here). The census is the only self-heal for anything the incremental
+    stream silently misses (truncated page, sub-cap removal drip) and the only pruner of a
+    site silently flipped to high-seas — keep it. It still unions a `changedSinceRows` pass
+    because `site_major/minor_version` moves ONLY on regulation/boundary changes, not on
+    attribute/coding corrections (the safety-critical case: a `1`=PROHIBITED that gets
+    fixed). Do NOT drop either prong.
+  - Invariants verified live, do not relitigate: `changed_since` is inclusive (`>=`);
+    `sites_updated` pagination is stable under `sort=NAME_ASC`; `last_update` is
+    day-granular (so a (version,date) equality skip is UNSAFE — every active in-mirror row
+    is re-fetched, idempotency comes from overwrite); `include_inactive` rows carry a
+    `status` field and `assertInactiveFlagHonored` hard-fails if a non-empty window lacks
+    it (flag regression would make removals invisible). "In the mirror" = index ∪
+    geometryUnavailable; removals clean BOTH stores; a parked withheld site that the window
+    returns active is force-fetched, never run through the version-unchanged skip.
 - Boundaries from MarViva/WDPA/CBD CHM sources are withheld by the API: changed sites
   keep their previously mirrored geometry; NEW sites without geometry wait in
   mirror-state.geometryUnavailable as `{SITE_ID: {v: [major, minor]}}` and are re-fetched

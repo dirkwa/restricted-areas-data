@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   sweepIndex,
   changedSinceIds,
+  changedSinceRows,
+  isRemovedRow,
+  assertInactiveFlagHonored,
+  deriveDelta,
+  patchIndex,
+  assertSaneDelta,
   diffIndex,
   assertSaneSweep,
   maxLastUpdate
@@ -14,6 +20,22 @@ const site = (id, major, minor, lastUpdate) => ({
   site_minor_version: String(minor),
   last_update: lastUpdate ?? null
 })
+
+/** A sites_updated active/removed row (carries a status field + country). */
+const row = (id, { status = 'active', country = 'Fiji', v = [1, 0], u = null } = {}) => ({
+  site_id: id,
+  status,
+  country,
+  site_major_version: String(v[0]),
+  site_minor_version: String(v[1]),
+  last_update: u
+})
+
+/** A getJson that serves the given pages in order. */
+const pager = (pages, urls) => async (url) => {
+  if (urls) urls.push(url)
+  return pages.shift() ?? { sites: [] }
+}
 
 describe('sweepIndex', () => {
   it('pages until a short page and indexes by SITE_ID with numeric versions', async () => {
@@ -77,6 +99,227 @@ describe('changedSinceIds (the same-version-correction signal)', () => {
     await expect(changedSinceIds(getJson, '2026-06-11', { limit: 1, maxPages: 3 })).rejects.toThrow(
       'terminate'
     )
+  })
+})
+
+describe('isRemovedRow / assertInactiveFlagHonored', () => {
+  it('detects removed status case-insensitively', () => {
+    expect(isRemovedRow({ status: 'removed' })).toBe(true)
+    expect(isRemovedRow({ status: 'Removed' })).toBe(true)
+    expect(isRemovedRow({ status: 'active' })).toBe(false)
+    expect(isRemovedRow({})).toBe(false)
+    expect(isRemovedRow(null)).toBe(false)
+  })
+
+  it('flag gate: empty window ok, rows-without-status throws, rows-with-status ok', () => {
+    expect(() => assertInactiveFlagHonored(0, false)).not.toThrow()
+    expect(() => assertInactiveFlagHonored(5, false)).toThrow('include_inactive')
+    expect(() => assertInactiveFlagHonored(5, true)).not.toThrow()
+  })
+})
+
+describe('changedSinceRows (incremental window classification)', () => {
+  it('passes include_inactive + sort + changed_since and pages to the end', async () => {
+    const urls = []
+    const getJson = pager([{ sites: [row('A'), row('B')] }, { sites: [row('C')] }], urls)
+    const res = await changedSinceRows(getJson, '2026-06-22', { limit: 2 })
+    expect([...res.active.keys()].sort()).toEqual(['A', 'B', 'C'])
+    expect(urls[0]).toContain('type=sites_updated')
+    expect(urls[0]).toContain('include_inactive=true')
+    expect(urls[0]).toContain('changed_since=2026-06-22')
+    expect(urls[0]).toContain('sort=NAME_ASC')
+    expect(urls[1]).toContain('page=2')
+  })
+
+  it('splits active / removed / reclassified-high-seas; counts reportedRows', async () => {
+    const getJson = pager([
+      {
+        sites: [
+          row('A', { status: 'active', country: 'Fiji' }),
+          row('HS', { status: 'active', country: HIGH_SEAS_COUNTRY }),
+          row('DEL', { status: 'removed', country: '' }), // removed rows often have empty country
+          row('DELHS', { status: 'removed', country: HIGH_SEAS_COUNTRY })
+        ]
+      }
+    ])
+    const res = await changedSinceRows(getJson, '2026-06-22', { limit: 500 })
+    expect([...res.active.keys()]).toEqual(['A'])
+    expect(res.active.get('A').hs).toBe(false)
+    expect([...res.reclassifiedHs]).toEqual(['HS'])
+    expect([...res.removed].sort()).toEqual(['DEL', 'DELHS'])
+    expect(res.reportedRows).toBe(4)
+  })
+
+  it('throws when a non-empty window carries no status field (flag regression)', async () => {
+    const noStatus = {
+      site_id: 'A',
+      country: 'Fiji',
+      site_major_version: '1',
+      site_minor_version: '0'
+    }
+    await expect(changedSinceRows(pager([{ sites: [noStatus] }]), '2026-06-22')).rejects.toThrow(
+      'include_inactive'
+    )
+  })
+
+  it('empty window returns empty sets without throwing', async () => {
+    const res = await changedSinceRows(pager([{ sites: [] }]), '2026-06-22')
+    expect(res.active.size).toBe(0)
+    expect(res.removed.size).toBe(0)
+    expect(res.reportedRows).toBe(0)
+  })
+
+  it('throws on non-terminating pagination', async () => {
+    const getJson = async () => ({ sites: [row('A')] })
+    await expect(
+      changedSinceRows(getJson, '2026-06-22', { limit: 1, maxPages: 3 })
+    ).rejects.toThrow('terminate')
+  })
+})
+
+describe('deriveDelta (the heart — index ∪ geometryUnavailable)', () => {
+  const idx = { KNOWN: { v: [1, 0], u: '2026-01-01' } }
+  const parked = { PARKED: { v: [2, 0] } }
+
+  it('classifies active rows: new->added, indexed->changed, parked->forceFetchParked', () => {
+    const active = new Map([
+      ['NEW', { v: [1, 0] }],
+      ['KNOWN', { v: [1, 0] }],
+      ['PARKED', { v: [2, 0] }]
+    ])
+    const d = deriveDelta(idx, parked, { active, removed: new Set(), reclassifiedHs: new Set() })
+    expect(d.added).toEqual(['NEW'])
+    expect(d.changed).toEqual(['KNOWN'])
+    expect(d.forceFetchParked).toEqual(['PARKED'])
+  })
+
+  it('a BYTE-IDENTICAL indexed row is still changed (no version/date skip)', () => {
+    // last_update is day-granular; a same-day double-correction must NOT be skipped.
+    const active = new Map([['KNOWN', { v: [1, 0], u: '2026-01-01' }]])
+    const d = deriveDelta(idx, {}, { active, removed: new Set(), reclassifiedHs: new Set() })
+    expect(d.changed).toEqual(['KNOWN'])
+  })
+
+  it('removes only mirrored ids; cleans both stores; ignores unmirrored removals', () => {
+    const removed = new Set(['KNOWN', 'PARKED', 'NEVER_SEEN'])
+    const d = deriveDelta(idx, parked, { active: new Map(), removed, reclassifiedHs: new Set() })
+    expect(d.removed.sort()).toEqual(['KNOWN', 'PARKED'])
+  })
+
+  it('active wins over removed for the same id, regardless of order', () => {
+    const active = new Map([['KNOWN', { v: [1, 1] }]])
+    const removed = new Set(['KNOWN'])
+    const d = deriveDelta(idx, {}, { active, removed, reclassifiedHs: new Set() })
+    expect(d.changed).toEqual(['KNOWN'])
+    expect(d.removed).toEqual([])
+  })
+
+  it('a mirrored site reclassified to high-seas is removed; an unmirrored one is a no-op', () => {
+    const reclassifiedHs = new Set(['KNOWN', 'BRAND_NEW_HS'])
+    const d = deriveDelta(idx, {}, { active: new Map(), removed: new Set(), reclassifiedHs })
+    expect(d.removed).toEqual(['KNOWN'])
+    expect(d.added).toEqual([])
+  })
+})
+
+describe('patchIndex (carry forward + patch both stores)', () => {
+  const entryOfId = (id) => ({ A: { v: [1, 0], u: '2026-02-02' }, B: { v: [3, 0], u: null } })[id]
+
+  it('removes ids from BOTH stores and preserves untouched baseline verbatim', () => {
+    const oldIndex = { A: { v: [1, 0], u: 'x' }, KEEP: { v: [9, 9], u: 'y' } }
+    const oldParked = { A: { v: [1, 0] }, P: { v: [5, 0] } }
+    const { index, geometryUnavailable } = patchIndex(oldIndex, oldParked, {
+      removedIds: new Set(['A']),
+      refreshed: new Map(),
+      consumed: new Set(),
+      entryOfId
+    })
+    expect(index).toEqual({ KEEP: { v: [9, 9], u: 'y' } })
+    expect(geometryUnavailable).toEqual({ P: { v: [5, 0] } })
+  })
+
+  it('refreshed with geometry -> indexed, dropped from parked', () => {
+    const { index, geometryUnavailable } = patchIndex(
+      {},
+      { A: { v: [0, 0] } },
+      {
+        removedIds: new Set(),
+        refreshed: new Map([['A', { geometry: { type: 'Polygon' } }]]),
+        consumed: new Set(),
+        entryOfId
+      }
+    )
+    expect(index.A).toEqual({ v: [1, 0], u: '2026-02-02' })
+    expect(geometryUnavailable.A).toBeUndefined()
+  })
+
+  it('refreshed null geometry but consumed -> stays indexed (kept old geometry)', () => {
+    const { index, geometryUnavailable } = patchIndex(
+      {},
+      {},
+      {
+        removedIds: new Set(),
+        refreshed: new Map([['A', { geometry: null }]]),
+        consumed: new Set(['A']),
+        entryOfId
+      }
+    )
+    expect(index.A).toEqual({ v: [1, 0], u: '2026-02-02' })
+    expect(geometryUnavailable.A).toBeUndefined()
+  })
+
+  it('refreshed null geometry, not consumed -> parked, absent from index', () => {
+    const { index, geometryUnavailable } = patchIndex(
+      {},
+      {},
+      {
+        removedIds: new Set(),
+        refreshed: new Map([['B', { geometry: null }]]),
+        consumed: new Set(),
+        entryOfId
+      }
+    )
+    expect(index.B).toBeUndefined()
+    expect(geometryUnavailable.B).toEqual({ v: [3, 0] })
+  })
+
+  it('does not mutate its inputs', () => {
+    const oldIndex = { A: { v: [1, 0] } }
+    const oldParked = { P: { v: [2, 0] } }
+    patchIndex(oldIndex, oldParked, {
+      removedIds: new Set(['A']),
+      refreshed: new Map(),
+      consumed: new Set(),
+      entryOfId
+    })
+    expect(oldIndex).toEqual({ A: { v: [1, 0] } })
+    expect(oldParked).toEqual({ P: { v: [2, 0] } })
+  })
+})
+
+describe('assertSaneDelta', () => {
+  it('caps removals on the absolute floor', () => {
+    expect(() => assertSaneDelta(28000, { added: 0, changed: 0, removed: 250 })).toThrow('refusing')
+  })
+
+  it('caps removals on the ratio for a small mirror', () => {
+    // 100 * 0.02 = 2 -> removing 10 trips it
+    expect(() => assertSaneDelta(100, { added: 0, changed: 0, removed: 10 })).toThrow('refusing')
+  })
+
+  it('trips the total-delta tripwire (changed_since parse failure replaying history)', () => {
+    expect(() => assertSaneDelta(28000, { added: 20000, changed: 0, removed: 0 })).toThrow(
+      'implausible'
+    )
+  })
+
+  it('does NOT block a large add/change batch with zero removals', () => {
+    expect(() => assertSaneDelta(28000, { added: 5000, changed: 0, removed: 0 })).not.toThrow()
+  })
+
+  it('accepts a normal small delta and no-ops on an empty mirror', () => {
+    expect(() => assertSaneDelta(28000, { added: 30, changed: 5, removed: 2 })).not.toThrow()
+    expect(() => assertSaneDelta(0, { added: 5, changed: 0, removed: 0 })).not.toThrow()
   })
 })
 

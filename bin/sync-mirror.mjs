@@ -1,29 +1,30 @@
 #!/usr/bin/env node
 /**
- * Weekly mirror sync: keep the canonical dataset mirror current via the
- * public Navigator API, following the upstream-recommended pattern
- * (https://protectedseas.gitbook.io/navigator-api-docs/conventions/data-synchronization):
- * sweep the catalog index, diff against the mirror, refresh only what moved.
+ * Mirror sync: keep the canonical dataset mirror current via the public
+ * Navigator API, following the upstream-recommended pattern
+ * (https://protectedseas.gitbook.io/navigator-api-docs/conventions/data-synchronization).
  *
  *   1. download mirror-index.json (+state) from the draft `mirror` release
- *   2. sweepIndex: full SITE_ID -> version catalog (~55 paced requests) for
- *      added/removed; changedSinceIds (changed_since=lastSweepDate) for the
- *      same-version attribute/coding corrections the sweep can't see
- *   3. diffIndex + assertSaneSweep
- *   4. nothing moved -> print changed=false and stop (shards never downloaded)
- *   5. else: download shards, fetch /api/detail/?export_boundaries=true per
- *      added/changed site (paced), rewrite shards, upload, print outputs
+ *   2. INCREMENTAL (weekly default): changedSinceRows(lastSweepDate) +
+ *      deriveDelta classify added/changed/removed/parked against the carried
+ *      mirror; assertSaneDelta caps removals.
+ *      CENSUS (~monthly / stale|missing baseline / --full): sweepIndex +
+ *      diffIndex + assertSaneSweep, unioning a changed_since pass for
+ *      same-version corrections.
+ *   3. nothing moved -> advance lastSweepDate (state-only) and stop
+ *   4. else: download shards, fetch /api/detail/?export_boundaries=true per
+ *      added/changed/parked site (paced), rewrite shards, patchIndex the
+ *      carried-forward index + geometryUnavailable, upload, print outputs
  *
- * Refreshed sites land in the rolling `updates.ndjson.gz` shard; their stale
- * lines are dropped from whichever shard held them. Sites whose boundary the
- * API withholds (MarViva/WDPA/CBD CHM sources) keep their previously mirrored
- * geometry; a NEW site without geometry cannot be rendered or geofenced, so it
- * is skipped and tallied in mirror-state.geometryUnavailable.
+ * The index is PATCHED, never rebuilt — sites_updated is not a census. Sites
+ * whose boundary the API withholds (MarViva/WDPA/CBD CHM) keep their previously
+ * mirrored geometry; new withheld sites park in mirror-state.geometryUnavailable.
  *
  * stdout is GitHub-Actions output lines (changed=, version_tag=, ...);
  * progress goes to stderr. Requires the gh CLI (GH_TOKEN) except in --dry-run.
+ * run(argv, deps) takes test seams { gh, makeClient, today, onUpload }.
  *
- * Usage: node bin/sync-mirror.mjs [--mirror-tag mirror] [--work work/sync] [--dry-run true]
+ * Usage: node bin/sync-mirror.mjs [--mirror-tag mirror] [--work work/sync] [--dry-run true] [--full true]
  */
 
 import fs from 'node:fs'
@@ -35,14 +36,29 @@ import { promisify } from 'node:util'
 
 import { API_BASE, createApiClient } from './lib/api-client.mjs'
 import { apiDetailToMirrorFeature } from './lib/api-map.mjs'
-import { sweepIndex, changedSinceIds, diffIndex, assertSaneSweep, maxLastUpdate } from './sweep.mjs'
+import {
+  sweepIndex,
+  changedSinceRows,
+  deriveDelta,
+  patchIndex,
+  diffIndex,
+  assertSaneSweep,
+  assertSaneDelta,
+  maxLastUpdate
+} from './sweep.mjs'
 
 const execFileAsync = promisify(execFile)
 
 const UPDATES_SHARD = 'updates.ndjson.gz'
 
+// A census re-lists the whole catalog (~55 requests); it self-heals anything the
+// incremental stream silently missed and prunes silently-flipped high-seas sites.
+// Run it ~monthly, on a too-stale baseline, on a missing baseline, or on --full.
+const CENSUS_CADENCE_DAYS = 30
+const BASELINE_STALE_DAYS = 60
+
 function parseArgs(argv) {
-  const out = { 'mirror-tag': 'mirror', work: 'work/sync', 'dry-run': 'false' }
+  const out = { 'mirror-tag': 'mirror', work: 'work/sync', 'dry-run': 'false', full: 'false' }
   for (let i = 0; i < argv.length; i += 2) {
     const k = argv[i]
     if (!k.startsWith('--')) throw new Error(`Unexpected argument: ${k}`)
@@ -51,6 +67,13 @@ function parseArgs(argv) {
     out[k.slice(2)] = v
   }
   return out
+}
+
+/** Whole-day difference between two YYYY-MM-DD dates (b - a). Infinity if a absent. */
+export function daysBetween(a, b) {
+  if (!a) return Infinity
+  const ms = Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)
+  return Number.isFinite(ms) ? Math.round(ms / 86400000) : Infinity
 }
 
 /**
@@ -124,21 +147,30 @@ async function* shardLines(path) {
 
 function gzipLineWriter(path) {
   const gzip = zlib.createGzip({ level: 6 })
-  gzip.pipe(fs.createWriteStream(path))
+  const out = fs.createWriteStream(path)
+  gzip.pipe(out)
   return {
     write: (obj) =>
       new Promise((resolve, reject) =>
         gzip.write(JSON.stringify(obj) + '\n', (err) => (err ? reject(err) : resolve()))
       ),
-    end: () => new Promise((resolve, reject) => gzip.end((err) => (err ? reject(err) : resolve())))
+    // Resolve only when the FILE is fully flushed to disk (out 'finish'), not
+    // merely when the gzip transform ends — otherwise a subsequent reader (or
+    // the upload) can race a partially-written file.
+    end: () =>
+      new Promise((resolve, reject) => {
+        out.on('finish', resolve)
+        out.on('error', reject)
+        gzip.end()
+      })
   }
 }
 
-async function gh(args, opts = {}) {
+async function ghReal(args, opts = {}) {
   return execFileAsync('gh', args, { maxBuffer: 64 * 1024 * 1024, ...opts })
 }
 
-async function downloadAssets(tag, dir, patterns) {
+async function downloadAssets(gh, tag, dir, patterns) {
   fs.mkdirSync(dir, { recursive: true })
   const patternArgs = patterns.flatMap((p) => ['--pattern', p])
   await gh(['release', 'download', tag, '--dir', dir, '--clobber', ...patternArgs])
@@ -172,8 +204,19 @@ function log(msg) {
   process.stderr.write(`${msg}\n`)
 }
 
-async function run() {
-  const args = parseArgs(process.argv.slice(2))
+/**
+ * @param {string[]} argv  process args (without node + script)
+ * @param {object} [deps]  test seams: { gh, makeClient, today, uploads }
+ *   gh         (args) => Promise        — defaults to the real gh CLI runner
+ *   makeClient () => { getJson, stats }  — defaults to createApiClient
+ *   today      () => 'YYYY-MM-DD'        — defaults to isoToday
+ *   onUpload   (paths) => void           — observe the final asset upload (tests)
+ */
+export async function run(argv = process.argv.slice(2), deps = {}) {
+  const gh = deps.gh ?? ghReal
+  const makeClient = deps.makeClient ?? createApiClient
+  const today = deps.today ?? isoToday
+  const args = parseArgs(argv)
   const tag = args['mirror-tag']
   const work = args.work
   const dryRun = args['dry-run'] === 'true'
@@ -183,47 +226,90 @@ async function run() {
   // re-run) invocation would be read during the rewrite and re-uploaded.
   fs.rmSync(work, { recursive: true, force: true })
 
-  await downloadAssets(tag, mirrorDir, ['mirror-index.json', 'mirror-state.json'])
+  await downloadAssets(gh, tag, mirrorDir, ['mirror-index.json', 'mirror-state.json'])
   const index = JSON.parse(fs.readFileSync(join(mirrorDir, 'mirror-index.json'), 'utf8'))
   const state = JSON.parse(fs.readFileSync(join(mirrorDir, 'mirror-state.json'), 'utf8'))
   const mirrorSize = Object.keys(index).length
   log(`mirror: ${mirrorSize} sites (dataset ${state.datasetDate})`)
 
-  const { getJson, stats } = createApiClient()
-  const api = await sweepIndex(getJson)
-  log(`sweep: ${api.size} sites in ${stats.requests} requests`)
+  const { getJson, stats } = makeClient()
 
-  const diff = diffIndex(index, api)
-  assertSaneSweep(mirrorSize, api.size, diff.removed.length)
-  const unavailable = normalizeGeometryUnavailable(state.geometryUnavailable, api)
-  const { fetch: addedToFetch, skipped } = partitionAdded(diff.added, api, unavailable)
-
-  // The catalog sweep catches added/removed and version bumps, but NOT
-  // same-version attribute/coding corrections (site versions don't move for
-  // those). The authoritative signal is changed_since; query it from the last
-  // sweep date and union the result into the change set. Only sites already in
-  // the mirror count here — brand-new ones are handled by `added`. With no
-  // baseline (first run after this shipped), skip it: diffIndex's version/date
-  // fallback covers that one run, and the next has lastSweepDate.
-  const changed = new Set(diff.changed)
+  // Census when forced (--full), when there is no baseline to anchor a window,
+  // when the baseline is too stale to trust a single window, or on the monthly
+  // cadence. Otherwise the cheap incremental path.
   const baseline = state.lastSweepDate
-  if (baseline) {
-    const updatedIds = await changedSinceIds(getJson, baseline)
-    let corrections = 0
-    for (const id of updatedIds) {
-      if (index[id] && !api.get(id)?.hs && !changed.has(id)) {
-        changed.add(id)
-        corrections += 1
+  const staleDays = daysBetween(baseline, today())
+  const censusDays = daysBetween(state.lastFullCensusDate, today())
+  const doCensus =
+    args.full === 'true' ||
+    !baseline ||
+    staleDays > BASELINE_STALE_DAYS ||
+    censusDays > CENSUS_CADENCE_DAYS
+
+  let added, changed, removedList, forceFetchParked, versionSource
+
+  if (doCensus) {
+    const api = await sweepIndex(getJson)
+    log(`census sweep: ${api.size} sites in ${stats.requests} requests`)
+    const diff = diffIndex(index, api)
+    assertSaneSweep(mirrorSize, api.size, diff.removed.length)
+    // The census still misses same-version corrections (versions don't move for
+    // those); union a changed_since pass when a baseline exists.
+    const censusParked = normalizeGeometryUnavailable(state.geometryUnavailable, api)
+    const censusForceFetchParked = new Set()
+    const changedSet = new Set(diff.changed)
+    if (baseline) {
+      const rows = await changedSinceRows(getJson, baseline)
+      for (const id of rows.active.keys()) {
+        // Fold in only corrections the census still lists (apiEntry truthy +
+        // non-high-seas). An indexed site is a `changed`; a PARKED withheld site
+        // returned active may have gained a boundary or be a same-version coding
+        // fix, so force-fetch it (else partitionAdded could skip it). An id in
+        // neither was removed/reclassified mid-sweep — diffIndex already has it
+        // in `removed`; folding it into `changed` would fetch a non-existent site.
+        const apiEntry = api.get(id)
+        if (!apiEntry || apiEntry.hs) continue
+        if (index[id]) changedSet.add(id)
+        else if (censusParked[id]) censusForceFetchParked.add(id)
       }
+      log(`census + changed_since ${baseline}: ${rows.active.size} active rows folded in`)
     }
-    log(`changed_since ${baseline}: ${updatedIds.size} reported, ${corrections} new corrections`)
+    // A parked id the census re-lists is in diff.added (sweep sees it, index
+    // doesn't); route it through forceFetchParked instead so partitionAdded's
+    // version-unchanged skip can't re-park it after we fetch its boundary.
+    added = diff.added.filter((id) => !censusForceFetchParked.has(id))
+    changed = [...changedSet]
+    removedList = diff.removed
+    forceFetchParked = [...censusForceFetchParked]
+    versionSource = api
   } else {
-    log('no lastSweepDate baseline yet — relying on version/date diff this run only')
+    const rows = await changedSinceRows(getJson, baseline)
+    log(
+      `changed_since ${baseline}: ${rows.reportedRows} rows ` +
+        `(${rows.active.size} active, ${rows.removed.size} removed, ${rows.reclassifiedHs.size} ->HS)`
+    )
+    const delta = deriveDelta(index, state.geometryUnavailable, rows)
+    added = delta.added
+    changed = delta.changed
+    removedList = delta.removed
+    forceFetchParked = delta.forceFetchParked
+    versionSource = rows.active
+    assertSaneDelta(mirrorSize, {
+      added: added.length,
+      changed: changed.length,
+      removed: removedList.length
+    })
   }
-  const changedList = [...changed]
+
+  const unavailable = normalizeGeometryUnavailable(state.geometryUnavailable, versionSource)
+  // Only truly-new ids run through the version-unchanged-withheld skip; parked
+  // ids that the window explicitly returned are force-fetched (they may have
+  // gained a boundary or be a same-version coding correction).
+  const { fetch: addedToFetch, skipped } = partitionAdded(added, versionSource, unavailable)
   log(
-    `diff: +${diff.added.length} added, ~${changedList.length} changed, -${diff.removed.length} removed` +
-      ` (${(diff.added.length - addedToFetch.length).toString()} version-unchanged withheld-boundary sites skipped)`
+    `delta: +${addedToFetch.length} added, ~${changed.length} changed, ` +
+      `-${removedList.length} removed, ${forceFetchParked.length} parked re-fetched ` +
+      `(${added.length - addedToFetch.length} version-unchanged withheld-boundary skipped)`
   )
 
   // The dataset date of an API-synced release is the sync date: after a
@@ -231,49 +317,65 @@ async function run() {
   // maxLastUpdate is only a sanity signal — it can sit BEHIND the bulk
   // extract's date (observed: 2026-04-16 vs extract 2026-05-28), so deriving
   // the date from it would walk the user-visible dataset date backwards.
-  const nothingMoved = addedToFetch.length + changedList.length + diff.removed.length === 0
-  const datasetDate = nothingMoved ? state.datasetDate : isoToday()
-  log(`newest upstream last_update: ${maxLastUpdate(api) ?? 'unknown'}`)
+  const nothingMoved =
+    addedToFetch.length + changed.length + removedList.length + forceFetchParked.length === 0
+  const datasetDate = nothingMoved ? state.datasetDate : today()
+  log(
+    `newest upstream last_update${doCensus ? '' : ' in window'}: ${maxLastUpdate(versionSource) ?? 'unknown'}`
+  )
   if (nothingMoved || dryRun) {
-    // Quiet runs still persist a one-time migration of a legacy id-array
-    // geometryUnavailable to the versioned shape: without a stored baseline,
-    // a boundary arriving via version bump would never trigger a retry.
-    if (nothingMoved && !dryRun && Array.isArray(state.geometryUnavailable)) {
+    // A quiet run still advances the baseline (changed_since is inclusive, so
+    // advancing to today never skips a same-day change — the next run re-queries
+    // from today) and migrates a legacy id-array geometryUnavailable to the
+    // versioned shape. Persist via a state-only upload.
+    if (nothingMoved && !dryRun) {
       const statePath = join(mirrorDir, 'mirror-state.json')
       fs.writeFileSync(
         statePath,
-        JSON.stringify({ ...state, geometryUnavailable: sortedByKey(skipped) }, null, 2) + '\n'
+        JSON.stringify(
+          {
+            ...state,
+            lastSweepDate: today(),
+            lastFullCensusDate: doCensus ? today() : (state.lastFullCensusDate ?? null),
+            geometryUnavailable: sortedByKey(unavailable)
+          },
+          null,
+          2
+        ) + '\n'
       )
       await gh(['release', 'upload', tag, '--clobber', statePath])
-      log('migrated geometryUnavailable to versioned entries (state-only upload)')
+      log('quiet run: advanced lastSweepDate (state-only upload)')
     }
     printOutputs({
       changed: !nothingMoved,
       added: addedToFetch.length,
-      updated: changedList.length,
-      removed: diff.removed.length,
+      updated: changed.length + forceFetchParked.length,
+      removed: removedList.length,
       dataset_date: datasetDate,
-      version_tag: `v${isoToday().replaceAll('-', '.')}`
+      version_tag: `v${today().replaceAll('-', '.')}`
     })
     if (dryRun && !nothingMoved) log('dry-run: stopping before detail fetch + rewrite')
     return
   }
 
-  await downloadAssets(tag, mirrorDir, ['*.ndjson.gz'])
+  await downloadAssets(gh, tag, mirrorDir, ['*.ndjson.gz'])
   const shardNames = fs.readdirSync(mirrorDir).filter((n) => n.endsWith('.ndjson.gz'))
 
-  const toRefresh = [...addedToFetch, ...changedList]
+  const toRefresh = [...addedToFetch, ...changed, ...forceFetchParked]
   log(`fetching ${toRefresh.length} site details (paced, ~${Math.ceil(toRefresh.length / 24)} min)`)
   const refreshed = await fetchDetails(getJson, toRefresh, (done, total) =>
     log(`  ${done}/${total}`)
   )
 
-  const removed = new Set(diff.removed)
+  const removed = new Set(removedList)
   const consumed = new Set()
   const outDir = join(work, 'out')
   fs.mkdirSync(outDir, { recursive: true })
   const updates = gzipLineWriter(join(outDir, UPDATES_SHARD))
 
+  // Rewrite every shard: drop removed lines, update refreshed-in-place (tracking
+  // `consumed` so a null-geometry refresh keeps its old geometry and stays
+  // indexed), pass the untouched baseline through.
   for (const name of shardNames) {
     const isUpdatesShard = name === UPDATES_SHARD
     const writer = isUpdatesShard ? null : gzipLineWriter(join(outDir, name))
@@ -286,40 +388,41 @@ async function run() {
     if (writer) await writer.end()
   }
 
-  // Leftover refreshed ids are new sites; without geometry they cannot be
-  // rendered or geofenced, so they wait in geometryUnavailable (with the
-  // catalog version we saw) until a version bump delivers a boundary.
-  // version-unchanged withheld sites that were never fetched carry over.
-  const geometryUnavailable = { ...skipped }
+  // Refreshed ids whose old line was NOT consumed are genuinely new lines: write
+  // the ones that have geometry; the rest are parked by patchIndex below.
   for (const [id, feature] of refreshed) {
-    if (consumed.has(id)) continue
-    if (feature.geometry === null) {
-      geometryUnavailable[id] = { v: api.get(id)?.v ?? [null, null] }
-    } else {
-      await updates.write(feature)
-    }
+    if (!consumed.has(id) && feature.geometry !== null) await updates.write(feature)
   }
   await updates.end()
 
-  // The new index is the sweep, minus high-seas sites (mirroring the HighSeas
-  // partition exclusion) and minus sites still awaiting a boundary — those
-  // stay "added" so the version check above decides any retry.
-  const newIndex = {}
-  for (const [id, entry] of api) {
-    if (entry.hs || geometryUnavailable[id]) continue
-    newIndex[id] = { v: entry.v, u: entry.u }
+  // Carry the mirror forward and patch both stores (removals clean index AND
+  // geometryUnavailable; null-geometry refresh parks unless its old line was
+  // consumed). Version-unchanged withheld sites skipped this run carry over.
+  // Pass the NORMALIZED object form, never the raw state: a legacy array
+  // geometryUnavailable spread into patchIndex would produce numeric keys and
+  // corrupt the persisted parked-site bookkeeping.
+  const { index: newIndex, geometryUnavailable: patchedUnavailable } = patchIndex(
+    index,
+    unavailable,
+    { removedIds: removed, refreshed, consumed, entryOfId: (id) => versionSource.get(id) }
+  )
+  const newGeometryUnavailable = { ...patchedUnavailable }
+  for (const [id, e] of Object.entries(skipped)) {
+    if (!newGeometryUnavailable[id]) newGeometryUnavailable[id] = e
   }
+
   const newState = {
     ...state,
     datasetDate,
-    lastSweepDate: isoToday(),
+    lastSweepDate: today(),
+    lastFullCensusDate: doCensus ? today() : (state.lastFullCensusDate ?? null),
     siteCount: Object.keys(newIndex).length,
     shards: fs
       .readdirSync(outDir)
       .filter((n) => n.endsWith('.ndjson.gz'))
       .sort()
       .map((name) => ({ name, bytes: fs.statSync(join(outDir, name)).size })),
-    geometryUnavailable: sortedByKey(geometryUnavailable)
+    geometryUnavailable: sortedByKey(newGeometryUnavailable)
   }
   fs.writeFileSync(join(outDir, 'mirror-index.json'), JSON.stringify(newIndex) + '\n')
   fs.writeFileSync(join(outDir, 'mirror-state.json'), JSON.stringify(newState, null, 2) + '\n')
@@ -327,14 +430,15 @@ async function run() {
   const uploads = fs.readdirSync(outDir).map((n) => join(outDir, n))
   log(`uploading ${uploads.length} assets to draft release '${tag}'`)
   await gh(['release', 'upload', tag, '--clobber', ...uploads])
+  deps.onUpload?.(uploads)
 
   printOutputs({
     changed: true,
-    added: diff.added.length,
-    updated: changedList.length,
-    removed: diff.removed.length,
+    added: addedToFetch.length,
+    updated: changed.length + forceFetchParked.length,
+    removed: removedList.length,
     dataset_date: datasetDate,
-    version_tag: `v${isoToday().replaceAll('-', '.')}`
+    version_tag: `v${today().replaceAll('-', '.')}`
   })
 }
 

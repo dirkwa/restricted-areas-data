@@ -47,6 +47,34 @@ export function foldFragments(fragments) {
   return { sites, partitions }
 }
 
+/**
+ * Build the mirror-state object. A fresh seed IS a complete census as of its
+ * dataset date, so that date is the correct changed_since anchor (lastSweepDate)
+ * — anchoring early can only re-fetch, never miss. lastFullCensusDate is null so
+ * the FIRST post-seed sync runs an API census: the seed is a bulk-download
+ * census, not an API one, and the first API census reconciles the API catalog's
+ * surplus over the download. dataset-date must be <= download-date.
+ */
+export function buildState(args, sites, partitions, shards) {
+  if (args['dataset-date'] > args['download-date']) {
+    throw new Error(
+      `dataset-date ${args['dataset-date']} is after download-date ${args['download-date']}`
+    )
+  }
+  return {
+    schema: 'navigator-download-geojson',
+    seededFrom: args['seeded-from'],
+    datasetDate: args['dataset-date'],
+    downloadDate: args['download-date'],
+    lastSweepDate: args['dataset-date'],
+    lastFullCensusDate: null,
+    siteCount: Object.keys(sites).length,
+    partitions,
+    shards,
+    geometryUnavailable: {}
+  }
+}
+
 async function run() {
   const args = parseArgs(process.argv.slice(2))
   const fragments = args.fragments.map((p) => JSON.parse(fs.readFileSync(p, 'utf8')))
@@ -61,17 +89,7 @@ async function run() {
       bytes: fs.statSync(join(args['mirror-dir'], name)).size
     }))
 
-  const state = {
-    schema: 'navigator-download-geojson',
-    seededFrom: args['seeded-from'],
-    datasetDate: args['dataset-date'],
-    downloadDate: args['download-date'],
-    lastSweepDate: null,
-    siteCount: Object.keys(sites).length,
-    partitions,
-    shards,
-    geometryUnavailable: {}
-  }
+  const state = buildState(args, sites, partitions, shards)
 
   fs.writeFileSync(join(args['mirror-dir'], 'mirror-index.json'), JSON.stringify(sites) + '\n')
   fs.writeFileSync(
