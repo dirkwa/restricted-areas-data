@@ -83,7 +83,9 @@ export function isNewer(upstream, published) {
  * transient states. Throws on give-up; callers that must not fail the workflow
  * wrap the call.
  */
-const RETRYABLE = new Set([429, 500, 502, 503, 504])
+// 403 included: the WordPress/ArcGIS hosts return it on anti-bot / rate-limit
+// blocks, which a paced retry with a real UA can plausibly clear.
+const RETRYABLE = new Set([403, 429, 500, 502, 503, 504])
 
 async function fetchText(url, { attempts = 3 } = {}) {
   let lastErr
