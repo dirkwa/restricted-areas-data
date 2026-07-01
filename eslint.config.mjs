@@ -14,6 +14,7 @@ export default [
         Buffer: 'readonly',
         structuredClone: 'readonly',
         AbortSignal: 'readonly',
+        setTimeout: 'readonly',
         URL: 'readonly',
         performance: 'readonly'
       }
