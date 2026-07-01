@@ -83,21 +83,26 @@ export function isNewer(upstream, published) {
  * transient states. Throws on give-up; callers that must not fail the workflow
  * wrap the call.
  */
+const RETRYABLE = new Set([429, 500, 502, 503, 504])
+
 async function fetchText(url, { attempts = 3 } = {}) {
   let lastErr
   for (let i = 0; i < attempts; i++) {
+    let res
     try {
-      const res = await globalThis.fetch(url, {
+      res = await globalThis.fetch(url, {
         headers: { 'user-agent': UA, accept: 'text/html,application/json;q=0.9,*/*;q=0.8' },
         signal: AbortSignal.timeout(15_000),
         redirect: 'follow'
       })
+    } catch (err) {
+      lastErr = err // network-layer failure (DNS, timeout) — always retryable
+    }
+    if (res) {
       if (res.ok) return res.text()
       lastErr = new Error(`${url} -> HTTP ${res.status}`)
-      // Only retry states that are plausibly transient; fail fast otherwise.
-      if (![429, 500, 502, 503, 504].includes(res.status)) throw lastErr
-    } catch (err) {
-      lastErr = err
+      // Fail fast on a non-transient status: don't burn the backoff budget.
+      if (!RETRYABLE.has(res.status)) throw lastErr
     }
     if (i < attempts - 1) await new Promise((r) => setTimeout(r, 500 * 2 ** i))
   }
