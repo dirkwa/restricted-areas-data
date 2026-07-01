@@ -16,7 +16,7 @@ on:
         description: 'Navigator dataset date (ISO, from the data-request page)'
         required: true
       download_date:
-        description: 'Date the maintainer clicked I-AGREE and downloaded (ISO)'
+        description: 'Date the maintainer received the bulk export (ISO)'
         required: true
       mirror_tag:
         description: 'Tag name of the draft mirror release'

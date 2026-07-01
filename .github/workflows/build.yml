@@ -2,7 +2,7 @@ name: build
 
 # Build the published per-region FlatGeobuf extracts from one of two sources:
 #   - staging-zip: a staged bulk Navigator download (terms-of-use gated; a
-#     human clicked I-AGREE and uploaded the zip to a staging release)
+#     human obtained a bulk export and uploaded the zip to a staging release)
 #   - mirror: the draft mirror release that sync.yml keeps current via the
 #     public Navigator API (the fully automated path)
 # Manually dispatchable, and callable as a reusable workflow by sync.yml.
@@ -22,7 +22,7 @@ on:
         description: 'Navigator dataset date (ISO; staging-zip only — mirror builds read it from mirror-state.json)'
         required: false
       download_date:
-        description: 'staging-zip only: date the maintainer clicked I-AGREE and downloaded (ISO)'
+        description: 'staging-zip only: date the maintainer received the bulk export (ISO)'
         required: false
       version_tag:
         description: 'Release tag to publish (e.g. v2026.05)'

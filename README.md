@@ -74,23 +74,28 @@ release date of the data they are navigating with.
 
 ## Bootstrap runbook (seed or re-seed the mirror)
 
-This is the only part that needs a human, because of the I-AGREE click-through.
-It is needed once, and again only for recovery or if the locked partition
-exclusions ever change.
+This is the only part that needs a human — obtaining a bulk export. Once the
+mirror exists it is kept current automatically by the weekly API `sync`; a
+re-seed is only needed for recovery, or if the locked partition exclusions ever
+change. **Day to day you never touch this** — for a normal "upstream looks
+newer" nudge, just dispatch `sync.yml` with `full=true` (a full API reconcile);
+re-seed only if the API mirror is unrecoverable.
 
-1. **Accept the terms and download.** Go to
-   https://navigatormap.org/data-request, read and accept the Terms of Use
-   (the I-AGREE step), and download the GeoJSON dataset. Note the dataset date
-   shown on the page and the date you downloaded.
+1. **Obtain a bulk export.** Request the full Navigator dataset via
+   https://navigatormap.org/data-request (Navigator V2 routes bulk-data
+   requests through Contact Us; the old self-serve I-AGREE download no longer
+   exists). Note the dataset date (ProtectedSeas encodes it as `MMDDYY` in the
+   ArcGIS layer name, e.g. `Navigator_AllSites_042426_…` = 2026-04-24) and the
+   date you received it.
 2. **Stage the raw zip.** Create a staging GitHub Release (e.g. tag
    `raw-2026.05`) and upload the unmodified Navigator zip as its only asset.
-   Staging keeps the gated bytes out of git while making them reachable by the
+   Staging keeps the bytes out of git while making them reachable by the
    workflow's `GITHUB_TOKEN`.
 3. **Seed the mirror.** Run the `seed-mirror.yml` workflow
    (Actions ▸ seed-mirror ▸ Run workflow) with:
    - `raw_release_tag` — the staging tag from step 2 (`raw-2026.05`)
-   - `dataset_date` — the date from the data-request page (ISO, e.g. `2026-05-28`)
-   - `download_date` — the date you clicked I-AGREE (ISO)
+   - `dataset_date` — the dataset date (ISO, e.g. `2026-05-28`)
+   - `download_date` — the date you received the export (ISO)
 4. **Publish.** Dispatch `build.yml` with `source: mirror`, a `version_tag`
    (e.g. `v2026.05`), and `publish: true` — or just let the next weekly `sync`
    run do it. The workflow publishes `<version_tag>` with the regional FGBs,
