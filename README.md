@@ -10,10 +10,13 @@ keeps a dataset mirror current via the public
 [Navigator Map API](https://protectedseas.gitbook.io/navigator-api-docs)
 (following its recommended
 [data-synchronization pattern](https://protectedseas.gitbook.io/navigator-api-docs/conventions/data-synchronization))
-and republishes the regional extracts whenever upstream sites change. The bulk
-Navigator download is only needed to (re)seed the mirror: it is terms-of-use
-gated and large (~2.5 GB zipped, ~6.7 GB expanded), never committed, and never
-fetched by CI — a human runs that gated step.
+and republishes the regional extracts whenever upstream sites change. The weekly
+run is a lightweight **incremental** update (typically a single API request);
+a **full catalog census** runs automatically about monthly as a self-healing
+backstop. The bulk Navigator download is only needed to (re)seed the mirror the
+very first time (or for disaster recovery): it is large (~2.5 GB zipped,
+~6.7 GB expanded), never committed, and never fetched by CI — a human runs that
+one bootstrap step.
 
 ## Pipeline
 
@@ -22,9 +25,10 @@ fetched by CI — a human runs that gated step.
 raw zip (staged)  ──seed-mirror.mjs──▶  dataset mirror (draft release:
                                         NDJSON.gz shards + mirror-index.json)
                                           ▲          │
-            weekly: sync-mirror.mjs ──────┘          │  (on change)
-            sweep API index, diff, refresh           │
-            changed sites, upsert shards             ▼
+    weekly: sync-mirror.mjs ──────────────┘          │  (on change)
+    incremental changed_since (new / corrected /     │
+    removed sites), or the monthly full census;      │
+    patch the mirror, refresh only what moved        ▼
                                   normalize.mjs ──▶ NDJSON (exploded, single-component)
                                           │
                                   region-tag.mjs
@@ -40,13 +44,21 @@ raw zip (staged)  ──seed-mirror.mjs──▶  dataset mirror (draft release:
   (`SITE_ID -> site version`) and a `mirror-state.json` provenance file. The
   mirror lives in a **draft** GitHub release (`mirror`), reachable by CI but
   not publicly listed.
-- **`bin/sync-mirror.mjs`** — the weekly refresh (`sync.yml`): sweeps the full
-  catalog index from the API (~55 paced requests), diffs against
-  `mirror-index.json`, fetches details + boundaries for added/changed sites
-  only, rewrites the shards, and triggers a rebuild + publish when anything
-  moved. Paced to stay well inside the API's 5-requests-per-10-s limit; sanity
-  guards refuse to sync from an implausible sweep (half-empty catalog, mass
-  removals).
+- **`bin/sync-mirror.mjs`** — the weekly refresh (`sync.yml`). Two paths:
+  - **Incremental** (the default): one `changed_since` +
+    `include_inactive=true` call against the API returns sites that were added,
+    corrected, or removed since the last run. It patches the mirror in place
+    (never rebuilt) and fetches details + boundaries only for what changed — a
+    quiet week is a single request. A per-run guard caps removals so an API
+    anomaly can't gut the mirror.
+  - **Census** (auto ~monthly, or on a stale/absent baseline, or `--full`):
+    sweeps the full catalog index (~55 paced requests) and reconciles. This is
+    the self-heal for anything the incremental stream could miss and the only
+    pruner of a site silently reclassified upstream. Its half-empty / mass-
+    removal sanity guards refuse to publish from an implausible sweep.
+
+  Either way it triggers a rebuild + publish only when something moved, paced
+  well inside the API's 5-requests-per-10-s limit.
 - **`bin/lib/api-client.mjs`** / **`bin/lib/api-map.mjs`** — paced/retrying API
   client and the API→download-schema field adapter (renames, string→number
   coercion, Z-coordinate strip). Sites whose boundary the API withholds
@@ -63,10 +75,12 @@ raw zip (staged)  ──seed-mirror.mjs──▶  dataset mirror (draft release:
 - **`bin/build-index.mjs`** / **`bin/make-manifest.mjs`** — assemble and emit
   `manifest.json` (sha256, size, bbox, featureCount per asset; license,
   citations, disclaimer, attribution, exclusion tallies).
-- **`bin/check-upstream.mjs`** — monthly cross-check comparing Navigator's
-  advertised dataset date to the published manifest; opens one tracking issue
-  when upstream is newer than what the sync delivered (catches a lagging or
-  broken sync).
+- **`bin/check-upstream.mjs`** — monthly cross-check comparing the dataset date
+  Navigator stamps into the ArcGIS FeatureServer layer name
+  (`Navigator_AllSites_MMDDYY_…`) against the published manifest; opens one
+  tracking issue when upstream is newer than what the sync delivered (catches a
+  lagging or broken sync). Download-free and best-effort — a transient upstream
+  failure degrades to "nothing new", never a red run.
 
 Each release's `manifest.json` records its Navigator extract date
 (`datasetDate`); the plugin surfaces that date to users so they always know the
@@ -109,22 +123,24 @@ advertises. `build.yml` can still build straight from a staged zip
 
 ## Exclusions
 
-Navigator carries **28,058 features**. Most of the total area is a handful of
-ocean-spanning overlays that are not navigation restrictions; carrying them would
-bloat the regional FGBs and, worse, fire false geofence alerts across entire
-ocean basins. The locked filters (`pipeline.config.json`) remove the area without
-removing the restrictions:
+Navigator carries on the order of **28,000+ sites** (the exact count drifts as
+the API sync adds/removes sites — the current figures live in each release's
+`manifest.json` `exclusions.counts`, e.g. ~28,300 in / ~27,400 kept). Most of
+the total *area* is a handful of ocean-spanning overlays that are not navigation
+restrictions; carrying them would bloat the regional FGBs and, worse, fire false
+geofence alerts across entire ocean basins. The locked filters
+(`pipeline.config.json`) remove the area without removing the restrictions:
 
-| Filter | Removed | Why |
+| Filter | Removes | Why |
 | --- | --- | --- |
-| `excludeCategories: [9]` | 538 features / ~205M km² | Category 9 = Jurisdictional Authority Area (EEZ overlays). A jurisdiction boundary is not a restriction. |
-| `excludePartitions: ['HighSeas']` | 704 features / ~1.18B km² | RFMO / basin-scale overlays spanning whole oceans. |
+| `excludeCategories: [9]` | EEZ overlays (~500 sites / ~200M km²) | Category 9 = Jurisdictional Authority Area. A jurisdiction boundary is not a restriction. |
+| `excludePartitions: ['HighSeas']` | RFMO / basin-scale overlays (~700 sites / ~1.2B km²) | Ocean-spanning; excluded at the source (and, via country, from the API sync). |
 | `maxAreaKm2WithoutHardBan: 50000` | the remaining FMA/Other giants | Drop any polygon over 50,000 km² **unless** it carries a hard transit ban (`entry===1` or `anchoring===1`), so genuinely prohibited zones of any size are always kept. |
 
-Net effect: **keep ~94% of features, remove ~99% of total area.** Inland-water
-sites are kept by choice (small, low-harm, and they carry real restrictions).
-Nothing is silently deleted — every removed feature is counted by reason and the
-tallies are recorded in `manifest.json`'s `exclusions` block.
+Net effect: **keep the vast majority of sites, remove ~99% of total area.**
+Inland-water sites are kept by choice (small, low-harm, and they carry real
+restrictions). Nothing is silently deleted — every removed feature is counted by
+reason and the live tallies are recorded in `manifest.json`'s `exclusions` block.
 
 > ⚠️ **Coding key.** Every coded fishing/marine-activity column uses
 > `0 = allowed, 1 = PROHIBITED, 2 = restricted, 3 = N/A or unknown, null = not-yet-coded`.
@@ -138,15 +154,22 @@ its bbox-centroid; regions overlap at the edges and array order resolves the
 overlap (more specific basins listed first). Slugs match the plugin's region
 config enum:
 
+The 12 basins (array order, most-specific first — the order is the overlap-
+resolution contract for `region-tag.mjs`):
+
 | Slug | Coverage |
 | --- | --- |
+| `southern-ocean` | Southern Ocean (below ~−60°) |
 | `mediterranean` | Mediterranean and Black Sea |
 | `caribbean` | Caribbean and Gulf of Mexico |
+| `north-europe` | North Sea, Baltic, and NW European shelf |
+| `nw-pacific` | NW Pacific (E Asia) |
 | `sw-pacific` | SW Pacific incl. Fiji — **antimeridian-safe** (a MultiPolygon split at ±180) |
 | `ne-pacific` | NE Pacific (North America west coast) |
 | `se-pacific` | SE Pacific (South America west coast) |
+| `south-atlantic` | South Atlantic |
 | `nw-atlantic` | NW Atlantic |
-| `ne-atlantic` | NE Atlantic incl. North Sea and Baltic |
+| `ne-atlantic` | NE Atlantic |
 | `indian-ocean` | Indian Ocean |
 
 `sw-pacific` is authored as two polygons (one from +120 to +180, one from −180 to
