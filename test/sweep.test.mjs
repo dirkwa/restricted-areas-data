@@ -61,6 +61,17 @@ describe('sweepIndex', () => {
     const getJson = async () => ({ sites: [site('A', 1, 0)] })
     await expect(sweepIndex(getJson, { limit: 1, maxPages: 3 })).rejects.toThrow('terminate')
   })
+
+  it('reads ps_id and prefers it over the deprecated site_id duplicate', async () => {
+    const getJson = async () => ({
+      sites: [
+        { ...site('OLD', 1, 0), ps_id: undefined }, // legacy row: only site_id present
+        { ...site('WRONG', 2, 0), ps_id: 'NEW' } // transition row: ps_id wins over site_id
+      ]
+    })
+    const index = await sweepIndex(getJson, { limit: 10 })
+    expect([...index.keys()].sort()).toEqual(['NEW', 'OLD'])
+  })
 })
 
 describe('changedSinceIds (the same-version-correction signal)', () => {
@@ -92,6 +103,17 @@ describe('changedSinceIds (the same-version-correction signal)', () => {
   it('returns an empty set when nothing changed', async () => {
     const ids = await changedSinceIds(async () => ({ sites: [] }), '2026-06-11')
     expect(ids.size).toBe(0)
+  })
+
+  it('reads ps_id and prefers it over the deprecated site_id duplicate', async () => {
+    const getJson = async () => ({
+      sites: [
+        { ...site('OLD', 1, 0), country: 'Fiji', ps_id: undefined },
+        { ...site('WRONG', 1, 0), country: 'Fiji', ps_id: 'NEW' }
+      ]
+    })
+    const ids = await changedSinceIds(getJson, '2026-06-11', { limit: 10 })
+    expect([...ids].sort()).toEqual(['NEW', 'OLD'])
   })
 
   it('throws on non-terminating pagination', async () => {
@@ -148,6 +170,19 @@ describe('changedSinceRows (incremental window classification)', () => {
     expect([...res.reclassifiedHs]).toEqual(['HS'])
     expect([...res.removed].sort()).toEqual(['DEL', 'DELHS'])
     expect(res.reportedRows).toBe(4)
+  })
+
+  it('reads ps_id and prefers it over the deprecated site_id duplicate', async () => {
+    const getJson = pager([
+      {
+        sites: [
+          { ...row('OLD'), ps_id: undefined }, // legacy row: only site_id
+          { ...row('WRONG'), ps_id: 'NEW' } // transition row: ps_id wins
+        ]
+      }
+    ])
+    const res = await changedSinceRows(getJson, '2026-06-22', { limit: 500 })
+    expect([...res.active.keys()].sort()).toEqual(['NEW', 'OLD'])
   })
 
   it('throws when a non-empty window carries no status field (flag regression)', async () => {

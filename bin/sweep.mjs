@@ -67,7 +67,10 @@ export async function sweepIndex(getJson, { limit = 500, maxPages = 500 } = {}) 
     )
     const batch = res?.sites ?? []
     for (const site of batch) {
-      const id = String(site.site_id ?? '')
+      // ProtectedSeas now returns the site identifier as `ps_id` across all search
+      // modes (matching Site Details / Boundary); `site_id` remains as a deprecated
+      // duplicate during the transition. Prefer ps_id, fall back until it is removed.
+      const id = String(site.ps_id ?? site.site_id ?? '')
       if (id !== '') sites.set(id, entryOf(site))
     }
     if (batch.length < limit) return sites
@@ -91,7 +94,7 @@ export async function changedSinceIds(getJson, changedSince, { limit = 500, maxP
     )
     const batch = res?.sites ?? []
     for (const site of batch) {
-      const id = String(site.site_id ?? '')
+      const id = String(site.ps_id ?? site.site_id ?? '')
       if (id !== '' && !isHighSeasCountry(site.country)) ids.add(id)
     }
     if (batch.length < limit) return ids
@@ -184,7 +187,7 @@ export async function changedSinceRows(
     )
     const batch = res?.sites ?? []
     for (const site of batch) {
-      const id = String(site.site_id ?? '')
+      const id = String(site.ps_id ?? site.site_id ?? '')
       if (id === '') continue
       reportedRows += 1
       if (typeof site.status === 'string') sawStatusField = true

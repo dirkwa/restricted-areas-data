@@ -69,6 +69,25 @@ describe('apiSiteToDownloadProps (golden: real /api/detail response)', () => {
     expect(typeof fromSearch.site_major_version).toBe('number')
   })
 
+  it('prefers ps_id over the deprecated site_id duplicate; neither raw key leaks', () => {
+    // During the deprecation window both keys are returned; here they carry
+    // DIFFERENT values so precedence is observable. The adapter must not depend
+    // on their order in the API object, and the deprecated value must never win.
+    // Assert BOTH key orders — a rename-map keyed by SITE_ID resolves order-last,
+    // so only one order would catch it.
+    for (const both of [
+      apiSiteToDownloadProps({ ps_id: 'CANONICAL', site_id: 'DEPRECATED' }),
+      apiSiteToDownloadProps({ site_id: 'DEPRECATED', ps_id: 'CANONICAL' })
+    ]) {
+      expect(both.SITE_ID).toBe('CANONICAL')
+      expect(both).not.toHaveProperty('ps_id')
+      expect(both).not.toHaveProperty('site_id')
+    }
+
+    // Legacy row with only site_id still resolves via the fallback.
+    expect(apiSiteToDownloadProps({ site_id: 'LEGACY' }).SITE_ID).toBe('LEGACY')
+  })
+
   it('decodes identically to the download record after adaptation', () => {
     // Verified once against the bulk download: this site decodes to exactly
     // these values from BOTH sources. Pins the adapter to that parity.
