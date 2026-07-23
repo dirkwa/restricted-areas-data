@@ -8,9 +8,11 @@
  * (test/fixtures/api/detail-AIISR33.json vs the staged 052826 download):
  *
  *   1. Every numeric value comes back as a string ("1", not 1).
- *   2. Five fields are renamed (ps_id<->SITE_ID, total_marine_area<->
- *      marine_area, percent_marine_area<->percent_marine, location_type<->
- *      site_location, tribal_exemptions<->tribal).
+ *   2. The identifier maps to SITE_ID with `ps_id ?? site_id` precedence (search
+ *      now returns the canonical ps_id; site_id lingers as a deprecated duplicate),
+ *      and four fields are renamed (total_marine_area<->marine_area,
+ *      percent_marine_area<->percent_marine, location_type<->site_location,
+ *      tribal_exemptions<->tribal).
  *   3. Boundary coordinates carry a Z (always 0); the download is 2D.
  *
  * The activity coding key is IDENTICAL (0=allowed, 1=PROHIBITED, 2=restricted,
@@ -21,10 +23,16 @@
  * null/empty. The caller keeps the previously mirrored geometry in that case.
  */
 
-/** API field name -> download field name. */
+/**
+ * API field name -> download field name. The site identifier is resolved
+ * separately (ps_id/site_id, below) with explicit precedence, so it is NOT in
+ * this table — a rename map can't express "ps_id wins over site_id" and, keyed
+ * by the same target, would let whichever appears last in the API object clobber
+ * the other.
+ */
+const API_SITE_ID_FIELDS = new Set(['ps_id', 'site_id'])
+
 const RENAME_API_TO_DOWNLOAD = {
-  ps_id: 'SITE_ID',
-  site_id: 'SITE_ID', // search responses use site_id for the same PS identifier
   total_marine_area: 'marine_area',
   percent_marine_area: 'percent_marine',
   location_type: 'site_location',
@@ -138,8 +146,12 @@ function coerceNumber(v) {
 /** Map one API site object's attributes into download-schema properties. */
 export function apiSiteToDownloadProps(apiSite) {
   const props = {}
+  // The identifier is now returned as ps_id in every API mode; site_id is a
+  // deprecated duplicate. Resolve it explicitly (ps_id wins) and skip both raw
+  // keys below so the deprecated value can never overwrite the canonical one.
+  props.SITE_ID = apiSite.ps_id ?? apiSite.site_id ?? null
   for (const [apiKey, value] of Object.entries(apiSite)) {
-    if (API_ONLY_FIELDS.has(apiKey)) continue
+    if (API_ONLY_FIELDS.has(apiKey) || API_SITE_ID_FIELDS.has(apiKey)) continue
     const key = RENAME_API_TO_DOWNLOAD[apiKey] ?? apiKey
     props[key] = NUMERIC_FIELDS.has(key) ? coerceNumber(value) : value
   }

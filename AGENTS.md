@@ -59,8 +59,10 @@ publish      build-index + make-manifest.mjs → manifest.json + LICENSE-DATA.md
 
 - The mirror stores **download-schema** GeoJSON Features (one per line, gzipped per
   partition). API responses are adapted INTO that schema by
-  [bin/lib/api-map.mjs](bin/lib/api-map.mjs) — renames (`ps_id→SITE_ID`,
-  `total_marine_area→marine_area`, `percent_marine_area→percent_marine`,
+  [bin/lib/api-map.mjs](bin/lib/api-map.mjs) — the identifier `SITE_ID` is resolved
+  with explicit `ps_id ?? site_id` precedence (search now returns the canonical
+  `ps_id`; `site_id` is a deprecated duplicate kept through a removal window), plus
+  renames (`total_marine_area→marine_area`, `percent_marine_area→percent_marine`,
   `location_type→site_location`, `tribal_exemptions→tribal`), string→number coercion
   (the API stringifies every numeric; wdpa_id is deliberately NOT coerced), and
   Z-coordinate strip (API boundaries are 3D). The adapter is pinned by a golden test
